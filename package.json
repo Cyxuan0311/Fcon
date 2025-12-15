@@ -1,0 +1,30 @@
+{
+  "name": "file-system-view",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "操作系统文件系统可视化项目",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@ant-design/icons-vue": "^7.0.1",
+    "ant-design-vue": "^4.2.6",
+    "echarts": "^5.5.0",
+    "gsap": "^3.12.5",
+    "lodash-es": "^4.17.21",
+    "pinia": "^2.1.7",
+    "three": "^0.161.0",
+    "vue": "^3.4.21",
+    "vue-echarts": "^6.6.9",
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^5.0.4",
+    "autoprefixer": "^10.4.18",
+    "postcss": "^8.4.35",
+    "tailwindcss": "^3.4.1",
+    "vite": "^5.2.0"
+  }
+}

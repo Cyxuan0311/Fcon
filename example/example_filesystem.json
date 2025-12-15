@@ -1,0 +1,54 @@
+{
+  "fileSystemType": "FAT32",
+  "disk": {
+    "id": "disk-1",
+    "totalBlocks": 1000,
+    "blockSize": 4096,
+    "fragmentRate": 5.2,
+    "freeBlocks": [0, 1, 2, 3, 100, 101, 200, 201, 300, 301],
+    "usedBlocks": {},
+    "files": [
+      {
+        "id": "file-1",
+        "name": "example.txt",
+        "type": "file",
+        "size": 8192,
+        "blocks": [10, 11],
+        "parentId": "root",
+        "createTime": "2024-01-01T10:00:00.000Z",
+        "allocationAlgorithm": "continuous"
+      },
+      {
+        "id": "file-2",
+        "name": "document.pdf",
+        "type": "file",
+        "size": 16384,
+        "blocks": [20, 21, 22, 23],
+        "parentId": "root",
+        "createTime": "2024-01-01T11:00:00.000Z",
+        "allocationAlgorithm": "continuous"
+      },
+      {
+        "id": "dir-1",
+        "name": "documents",
+        "type": "directory",
+        "size": 0,
+        "blocks": [],
+        "parentId": "root",
+        "createTime": "2024-01-01T12:00:00.000Z",
+        "allocationAlgorithm": null
+      },
+      {
+        "id": "file-3",
+        "name": "readme.md",
+        "type": "file",
+        "size": 4096,
+        "blocks": [30],
+        "parentId": "dir-1",
+        "createTime": "2024-01-01T13:00:00.000Z",
+        "allocationAlgorithm": "continuous"
+      }
+    ]
+  }
+}
+
