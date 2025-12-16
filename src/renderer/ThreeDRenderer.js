@@ -20,12 +20,18 @@ export class ThreeDRenderer {
     this.fileNodes = new Map() // 文件ID -> 3D节点
     this.onSelectCallback = null
     this.onHoverCallback = null // 悬停回调
+    this.onConnectionSelectCallback = null // 连接线选择回调
     this.controls = null
     this.hoveredBlock = null // 当前悬停的块
     this.highlightedBlocks = new Set() // 当前高亮（浮起）的块集合
     this.gridSize = 0 // 保存网格大小，用于优化上浮动画
     this.spacing = 1.15 // 保存块间距
     this.activeAnimations = new Map() // 跟踪每个块的活跃动画，防止被重置
+    this.fileStructureTree = null // 文件结构树组
+    this.fileStructureNodes = new Map() // 文件结构节点映射
+    this.fileStructureLines = [] // 文件结构连接线
+    this.currentView = 'disk' // 当前视图：'disk' 或 'tree'
+    this.gridHelper = null // 网格辅助对象
   }
   
   /**
@@ -77,9 +83,9 @@ export class ThreeDRenderer {
     this.scene.add(pointLight)
     
     // 添加网格地面（可选，用于更好的空间感）
-    const gridHelper = new THREE.GridHelper(50, 50, 0x2a2a3a, 0x1a1a2a)
-    gridHelper.position.y = -0.5
-    this.scene.add(gridHelper)
+    this.gridHelper = new THREE.GridHelper(50, 50, 0x2a2a3a, 0x1a1a2a)
+    this.gridHelper.position.y = -0.5
+    this.scene.add(this.gridHelper)
     
     // 创建射线投射器（用于鼠标交互）
     this.raycaster = new THREE.Raycaster()
@@ -157,6 +163,8 @@ export class ThreeDRenderer {
    * @param {Object} disk - 磁盘对象
    */
   createDisk(disk) {
+    this.disk = disk // 保存磁盘对象引用
+    
     // 清除旧的磁盘块
     this.diskBlocks.forEach(block => {
       if (block.parent) {
@@ -1322,6 +1330,13 @@ export class ThreeDRenderer {
   }
   
   /**
+   * 设置连接线选择回调
+   */
+  setOnConnectionSelectCallback(callback) {
+    this.onConnectionSelectCallback = callback
+  }
+  
+  /**
    * 动画循环
    */
   animate() {
@@ -1330,6 +1345,15 @@ export class ThreeDRenderer {
     // 更新控制器（必须每帧调用，用于阻尼效果）
     if (this.controls) {
       this.controls.update()
+    }
+    
+    // 更新文件结构树的文本标签朝向相机
+    if (this.currentView === 'tree' && this.fileStructureNodes && this.camera) {
+      this.fileStructureNodes.forEach(nodeData => {
+        if (nodeData.textMesh) {
+          nodeData.textMesh.lookAt(this.camera.position)
+        }
+      })
     }
     
     if (this.renderer && this.scene && this.camera) {
@@ -1525,6 +1549,23 @@ export class ThreeDRenderer {
           this.onSelectCallback(userData.file)
         }
         this.highlightFileNode(userData.fileId)
+      } else if (userData.type === 'treeNode' && userData.fileId) {
+        // 选中树节点
+        if (this.onSelectCallback && userData.fileId !== 'root') {
+          this.onSelectCallback(userData.file)
+        }
+      } else if (userData.type === 'connectionLine') {
+        // 选中连接线
+        if (this.onConnectionSelectCallback) {
+          this.onConnectionSelectCallback({
+            parent: userData.parentNode,
+            child: userData.childNode,
+            parentId: userData.parentId,
+            childId: userData.childId
+          })
+        }
+        // 高亮连接线
+        this.highlightConnectionLine(object)
       } else if (userData.type === 'diskBlock') {
         // 选中磁盘块
         const file = this.disk?.usedBlocks?.[userData.blockNumber]
@@ -1535,6 +1576,458 @@ export class ThreeDRenderer {
     }
   }
   
+  /**
+   * 创建文件结构树形可视化
+   * @param {Array} files - 文件列表
+   */
+  createFileStructureTree(files) {
+    // 清除旧的文件结构树
+    if (this.fileStructureTree) {
+      this.scene.remove(this.fileStructureTree)
+    }
+    this.fileStructureNodes.clear()
+    this.fileStructureLines = []
+    
+    if (!files || files.length === 0) {
+      return
+    }
+    
+    // 创建文件结构树组
+    this.fileStructureTree = new THREE.Group()
+    this.fileStructureTree.name = 'FileStructureTree'
+    // 根据当前视图设置可见性（默认隐藏，由showTreeView控制）
+    this.fileStructureTree.visible = this.currentView === 'tree'
+    this.scene.add(this.fileStructureTree)
+    
+    // 构建树形结构数据
+    const fileMap = new Map()
+    files.forEach(file => {
+      fileMap.set(file.id, file)
+    })
+    
+    // 找到根节点（parentId === 'root' 或不存在）
+    const rootFiles = files.filter(f => !f.parentId || f.parentId === 'root')
+    
+    // 计算树的最大深度和宽度
+    const treeInfo = this.calculateTreeLayout(files, rootFiles)
+    
+    // 创建根节点
+    const rootNode = {
+      id: 'root',
+      name: '/',
+      type: 'directory',
+      children: rootFiles
+    }
+    
+    // 递归创建节点
+    const visited = new Set()
+    this.createTreeNode(rootNode, fileMap, files, 0, treeInfo, new THREE.Vector3(0, 0, 0), visited)
+    
+    // 调整相机位置以适应树形结构
+    this.adjustCameraForTree(treeInfo)
+  }
+  
+  /**
+   * 计算树形布局信息
+   */
+  calculateTreeLayout(files, rootFiles) {
+    // 使用更安全的方式计算深度，避免循环引用
+    const visited = new Set()
+    const getDepth = (fileId, depth = 0, maxDepth = 20) => {
+      // 防止无限递归
+      if (depth > maxDepth || visited.has(fileId)) {
+        return depth
+      }
+      visited.add(fileId)
+      
+      const children = files.filter(f => f.parentId === fileId)
+      if (children.length === 0) {
+        visited.delete(fileId)
+        return depth
+      }
+      
+      const childDepths = children.map(child => getDepth(child.id, depth + 1, maxDepth))
+      visited.delete(fileId)
+      return Math.max(...childDepths, depth)
+    }
+    
+    // 计算最大深度
+    let maxDepth = 1
+    if (rootFiles.length > 0) {
+      visited.clear()
+      const depths = rootFiles.map(f => {
+        visited.clear()
+        return getDepth(f.id, 1, 20)
+      })
+      maxDepth = Math.max(...depths, 1)
+    }
+    
+    // 计算每层的最大宽度
+    const levelWidths = []
+    for (let level = 0; level < maxDepth; level++) {
+      const levelFiles = files.filter(f => {
+        let currentLevel = 0
+        let current = f
+        const path = new Set()
+        
+        // 向上查找父节点，计算层级
+        while (current && current.parentId && current.parentId !== 'root' && currentLevel < 20) {
+          if (path.has(current.id)) {
+            break // 检测到循环
+          }
+          path.add(current.id)
+          currentLevel++
+          current = files.find(p => p.id === current.parentId)
+          if (!current) break
+        }
+        
+        return currentLevel === level
+      })
+      levelWidths.push(levelFiles.length)
+    }
+    
+    const maxWidth = Math.max(...levelWidths, 1)
+    
+    return {
+      maxDepth,
+      maxWidth,
+      levelHeight: 4, // 每层高度
+      nodeSpacing: 3 // 节点间距
+    }
+  }
+  
+  /**
+   * 创建文件夹几何体（文件夹图标形状）
+   */
+  createFolderGeometry() {
+    const folderGroup = new THREE.Group()
+    
+    // 文件夹主体（矩形）
+    const bodyGeometry = new THREE.BoxGeometry(0.8, 0.6, 0.1)
+    const bodyMaterial = new THREE.MeshStandardMaterial({
+      color: 0xffd700,
+      metalness: 0.3,
+      roughness: 0.4
+    })
+    const body = new THREE.Mesh(bodyGeometry, bodyMaterial)
+    body.position.set(0, 0, 0)
+    folderGroup.add(body)
+    
+    // 文件夹标签（小矩形，在顶部）
+    const tabGeometry = new THREE.BoxGeometry(0.3, 0.15, 0.1)
+    const tabMaterial = new THREE.MeshStandardMaterial({
+      color: 0xffaa00,
+      metalness: 0.3,
+      roughness: 0.4
+    })
+    const tab = new THREE.Mesh(tabGeometry, tabMaterial)
+    tab.position.set(-0.15, 0.3, 0)
+    folderGroup.add(tab)
+    
+    return folderGroup
+  }
+  
+  /**
+   * 创建文件几何体（文档图标形状）
+   */
+  createFileGeometry() {
+    const fileGroup = new THREE.Group()
+    
+    // 文件主体（矩形，稍微倾斜）
+    const bodyGeometry = new THREE.BoxGeometry(0.5, 0.7, 0.05)
+    const bodyMaterial = new THREE.MeshStandardMaterial({
+      color: 0xffffff,
+      metalness: 0.2,
+      roughness: 0.6
+    })
+    const body = new THREE.Mesh(bodyGeometry, bodyMaterial)
+    body.rotation.z = -0.1
+    body.position.set(0, 0, 0)
+    fileGroup.add(body)
+    
+    // 文件折角（小三角形，右上角）
+    const cornerShape = new THREE.Shape()
+    cornerShape.moveTo(0, 0)
+    cornerShape.lineTo(0.15, 0)
+    cornerShape.lineTo(0, 0.15)
+    cornerShape.lineTo(0, 0)
+    const cornerGeometry = new THREE.ShapeGeometry(cornerShape)
+    const cornerMaterial = new THREE.MeshStandardMaterial({
+      color: 0xcccccc,
+      side: THREE.DoubleSide
+    })
+    const corner = new THREE.Mesh(cornerGeometry, cornerMaterial)
+    corner.position.set(0.2, 0.3, 0.03)
+    corner.rotation.z = Math.PI / 4
+    fileGroup.add(corner)
+    
+    return fileGroup
+  }
+  
+  /**
+   * 创建树节点
+   */
+  createTreeNode(node, fileMap, allFiles, level, treeInfo, position, visited = new Set()) {
+    // 防止循环引用
+    if (visited.has(node.id)) {
+      console.warn('检测到循环引用，跳过节点:', node.id)
+      return
+    }
+    visited.add(node.id)
+    
+    // 限制最大深度
+    if (level > 10) {
+      console.warn('达到最大深度，停止创建节点')
+      visited.delete(node.id)
+      return
+    }
+    
+    const children = node.children || []
+    const childCount = children.length
+    
+    // 创建节点几何体（目录用文件夹形状，文件用文档形状）
+    let mesh
+    if (node.type === 'directory' || node.id === 'root') {
+      // 文件夹：使用文件夹图标
+      const folderGroup = this.createFolderGeometry()
+      folderGroup.position.copy(position)
+      mesh = folderGroup
+      
+      // 为文件夹添加统一的材质颜色
+      const nodeColor = node.id === 'root' ? 0x4a90e2 : getFileColor(node.id)
+      folderGroup.children.forEach(child => {
+        if (child.material) {
+          child.material.color.setHex(nodeColor)
+          child.material.emissive = new THREE.Color(nodeColor)
+          child.material.emissiveIntensity = 0.2
+        }
+      })
+    } else {
+      // 文件：使用文档图标
+      const fileGroup = this.createFileGeometry()
+      fileGroup.position.copy(position)
+      mesh = fileGroup
+      
+      // 为文件添加颜色（使用文件对应的颜色）
+      const nodeColor = getFileColor(node.id)
+      fileGroup.children.forEach(child => {
+        if (child.material && child.material.color) {
+          // 文件主体使用文件颜色，但保持较亮的白色
+          if (child.material.color.getHex() === 0xffffff) {
+            const r = ((nodeColor >> 16) & 0xff) / 255
+            const g = ((nodeColor >> 8) & 0xff) / 255
+            const b = (nodeColor & 0xff) / 255
+            child.material.color.setRGB(Math.min(1, r + 0.3), Math.min(1, g + 0.3), Math.min(1, b + 0.3))
+          }
+          child.material.emissive = new THREE.Color(nodeColor)
+          child.material.emissiveIntensity = 0.15
+        }
+      })
+    }
+    
+    mesh.userData = { 
+      fileId: node.id, 
+      file: node,
+      type: 'treeNode',
+      level
+    }
+    
+    this.fileStructureTree.add(mesh)
+    this.fileStructureNodes.set(node.id, { mesh, node, position: position.clone() })
+    
+    // 创建文本标签
+    if (node.name) {
+      const textTexture = this.createTextTexture(
+        node.name,
+        28,
+        '#ffffff',
+        'rgba(0, 0, 0, 0.8)'
+      )
+      const textMaterial = new THREE.MeshBasicMaterial({
+        map: textTexture,
+        transparent: true,
+        side: THREE.DoubleSide
+      })
+      const textGeometry = new THREE.PlaneGeometry(2.5, 0.6)
+      const textMesh = new THREE.Mesh(textGeometry, textMaterial)
+      textMesh.position.set(position.x, position.y + 1.2, position.z)
+      if (this.camera) {
+        textMesh.lookAt(this.camera.position)
+      }
+      this.fileStructureTree.add(textMesh)
+      
+      // 存储文本网格以便更新
+      const nodeData = this.fileStructureNodes.get(node.id)
+      if (nodeData) {
+        nodeData.textMesh = textMesh
+      }
+    }
+    
+    // 如果有子节点，创建子节点
+    if (childCount > 0) {
+      // 计算子节点位置（水平排列）
+      const totalWidth = (childCount - 1) * treeInfo.nodeSpacing
+      const startX = position.x - totalWidth / 2
+      const childY = position.y - treeInfo.levelHeight
+      
+      children.forEach((child, index) => {
+        const childFile = fileMap.get(child.id)
+        if (!childFile) return
+        
+        const childX = startX + index * treeInfo.nodeSpacing
+        const childPosition = new THREE.Vector3(childX, childY, position.z)
+        
+        // 创建连接线（从父节点底部到子节点顶部）
+        const lineStart = new THREE.Vector3(position.x, position.y - 0.5, position.z)
+        const lineEnd = new THREE.Vector3(childPosition.x, childPosition.y + 0.5, childPosition.z)
+        
+        const lineGeometry = new THREE.BufferGeometry().setFromPoints([
+          lineStart,
+          lineEnd
+        ])
+        const lineMaterial = new THREE.LineBasicMaterial({
+          color: 0x718096,
+          opacity: 0.5,
+          transparent: true,
+          linewidth: 2
+        })
+        const line = new THREE.Line(lineGeometry, lineMaterial)
+        // 为连接线添加用户数据，包含父子节点信息
+        line.userData = {
+          type: 'connectionLine',
+          parentNode: node,
+          childNode: childFile,
+          parentId: node.id,
+          childId: childFile.id
+        }
+        this.fileStructureTree.add(line)
+        this.fileStructureLines.push(line)
+        
+        // 递归创建子节点
+        const childChildren = allFiles.filter(f => f && f.parentId === childFile.id)
+        this.createTreeNode(
+          { ...childFile, children: childChildren },
+          fileMap,
+          allFiles,
+          level + 1,
+          treeInfo,
+          childPosition,
+          visited
+        )
+      })
+    }
+  }
+  
+  /**
+   * 调整相机位置以适应树形结构
+   */
+  adjustCameraForTree(treeInfo) {
+    if (!treeInfo) return
+    
+    // 计算树的中心点和范围
+    const centerY = -treeInfo.maxDepth * treeInfo.levelHeight / 2
+    const distance = Math.max(treeInfo.maxWidth * treeInfo.nodeSpacing, treeInfo.maxDepth * treeInfo.levelHeight) * 1.5
+    
+    // 设置相机位置（从上方斜视）
+    this.camera.position.set(0, distance * 0.6, distance)
+    this.camera.lookAt(0, centerY, 0)
+    
+    // 更新控制器目标
+    if (this.controls) {
+      this.controls.target.set(0, centerY, 0)
+      this.controls.update()
+    }
+  }
+  
+  /**
+   * 显示磁盘视图
+   */
+  showDiskView() {
+    this.currentView = 'disk'
+    
+    // 显示磁盘块
+    this.diskBlocks.forEach(block => {
+      if (block) {
+        block.visible = true
+      }
+    })
+    
+    // 隐藏文件结构树（确保完全隐藏）
+    if (this.fileStructureTree) {
+      this.fileStructureTree.visible = false
+      // 同时隐藏所有连接线
+      this.fileStructureLines.forEach(line => {
+        if (line) {
+          line.visible = false
+        }
+      })
+    }
+    
+    // 显示网格
+    if (this.gridHelper) {
+      this.gridHelper.visible = true
+    }
+    
+    // 调整相机到磁盘视图
+    if (this.disk && this.disk.totalBlocks > 0) {
+      this.adjustCameraForDisk(this.disk)
+    }
+  }
+  
+  /**
+   * 显示文件结构树视图
+   */
+  showTreeView() {
+    this.currentView = 'tree'
+    
+    // 隐藏磁盘块
+    this.diskBlocks.forEach(block => {
+      if (block) {
+        block.visible = false
+      }
+    })
+    
+    // 隐藏网格
+    if (this.gridHelper) {
+      this.gridHelper.visible = false
+    }
+    
+    // 显示文件结构树
+    if (this.fileStructureTree) {
+      this.fileStructureTree.visible = true
+      // 同时显示所有连接线
+      this.fileStructureLines.forEach(line => {
+        if (line) {
+          line.visible = true
+        }
+      })
+      
+      // 更新文本标签朝向相机
+      this.fileStructureNodes.forEach(nodeData => {
+        if (nodeData.textMesh && this.camera) {
+          nodeData.textMesh.lookAt(this.camera.position)
+        }
+      })
+    } else {
+      // 如果树不存在，重新创建
+      if (this.disk && this.disk.files && this.disk.files.length > 0) {
+        console.log('创建文件结构树，文件数量:', this.disk.files.length)
+        this.createFileStructureTree(this.disk.files)
+      } else {
+        console.warn('无法创建文件结构树：没有文件数据', this.disk)
+      }
+    }
+    
+    // 重新调整相机位置
+    if (this.fileStructureTree && this.fileStructureTree.visible) {
+      const files = this.disk?.files || []
+      if (files.length > 0) {
+        const rootFiles = files.filter(f => !f.parentId || f.parentId === 'root')
+        const treeInfo = this.calculateTreeLayout(files, rootFiles)
+        this.adjustCameraForTree(treeInfo)
+      }
+    }
+  }
   
   /**
    * 销毁渲染器
