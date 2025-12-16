@@ -19,6 +19,45 @@
           <ApartmentOutlined />
           <span>结构</span>
         </button>
+        <button
+          :class="['view-switch-btn', { active: currentView === 'index' }]"
+          @click="switchView('index')"
+          title="索引可视化"
+        >
+          <FileSearchOutlined />
+          <span>索引</span>
+        </button>
+      </div>
+    </div>
+    
+    <!-- 索引可视化搜索框 -->
+    <div v-if="currentView === 'index' && !showTerminal" class="index-search-box">
+      <div class="search-box-content">
+        <SearchOutlined class="search-icon" />
+        <input
+          ref="searchInputRef"
+          v-model="searchFileName"
+          @input="handleSearchInput"
+          @keydown.enter="handleSearchInput"
+          @keydown.ctrl.a.prevent="selectAllText"
+          @dblclick="selectAllText"
+          type="text"
+          placeholder="输入文件名进行搜索..."
+          class="search-input"
+        />
+        <button
+          v-if="searchFileName"
+          @click="clearSearch"
+          class="clear-btn"
+          title="清空搜索"
+        >
+          <CloseOutlined />
+        </button>
+      </div>
+      <div v-if="searchedFile" class="search-result-info">
+        <span class="result-label">找到文件：</span>
+        <span class="result-name">{{ searchedFile.name }}</span>
+        <span class="result-algorithm">（{{ getAlgorithmName(searchedFile.allocationAlgorithm) }}）</span>
       </div>
     </div>
     
@@ -90,8 +129,8 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted, watch } from 'vue'
-import { FolderOutlined, DatabaseOutlined, ApartmentOutlined } from '@ant-design/icons-vue'
+import { ref, onMounted, onUnmounted, watch, computed, nextTick } from 'vue'
+import { FolderOutlined, DatabaseOutlined, ApartmentOutlined, FileSearchOutlined, SearchOutlined, CloseOutlined } from '@ant-design/icons-vue'
 import { useFileSystemStore } from '@/stores/fileSystem'
 import { ThreeDRenderer } from '@/renderer/ThreeDRenderer'
 import { clearFileColors } from '@/utils/colorGenerator'
@@ -110,22 +149,29 @@ let renderer = null
 let currentlyHighlightedFileId = null // 跟踪当前高亮的文件ID
 
 // 视图切换
-const currentView = ref('disk') // 'disk' 或 'tree'
+const currentView = ref('disk') // 'disk'、'tree' 或 'index'
 
 // 状态面板相关
 const currentSelectedFile = ref(null)
 const hoveredFile = ref(null)
 const selectedConnection = ref(null) // 选中的连接关系
 
+// 索引可视化相关
+const searchFileName = ref('')
+const searchedFile = ref(null)
+const searchInputRef = ref(null)
+
 // 切换视图
 const switchView = (view) => {
   if (currentView.value === view) return
   currentView.value = view
+  selectedConnection.value = null // 清除连接选择
   
   if (renderer) {
     if (view === 'disk') {
-      // 切换到磁盘可视化：显示磁盘块，隐藏文件结构树
+      // 切换到磁盘可视化：显示磁盘块，隐藏文件结构树和索引可视化
       renderer.showDiskView()
+      renderer.hideIndexVisualization()
     } else if (view === 'tree') {
       // 切换到文件结构可视化：隐藏磁盘块，显示文件结构树
       // 如果树不存在，先创建
@@ -133,8 +179,86 @@ const switchView = (view) => {
         renderer.createFileStructureTree(fileSystemStore.files)
       }
       renderer.showTreeView()
+      renderer.hideIndexVisualization()
+    } else if (view === 'index') {
+      // 切换到索引可视化：隐藏磁盘块和文件结构树
+      renderer.hideDiskView()
+      if (renderer.fileStructureTree) {
+        renderer.fileStructureTree.visible = false
+      }
+      renderer.showIndexVisualization()
+      // 如果有搜索的文件，显示其索引可视化
+      if (searchedFile.value) {
+        renderer.visualizeFileIndex(searchedFile.value)
+      }
+      // 自动聚焦搜索框
+      nextTick(() => {
+        if (searchInputRef.value) {
+          searchInputRef.value.focus()
+        }
+      })
     }
   }
+}
+
+// 处理搜索输入
+const handleSearchInput = () => {
+  if (!searchFileName.value.trim()) {
+    clearSearch()
+    return
+  }
+  
+  // 在文件列表中搜索匹配的文件
+  const files = fileSystemStore.files
+  const searchTerm = searchFileName.value.trim().toLowerCase()
+  
+  const foundFile = files.find(file => 
+    file.type === 'file' && 
+    file.name.toLowerCase().includes(searchTerm)
+  )
+  
+  if (foundFile) {
+    searchedFile.value = foundFile
+    if (renderer && currentView.value === 'index') {
+      renderer.visualizeFileIndex(foundFile)
+    }
+  } else {
+    searchedFile.value = null
+    if (renderer && currentView.value === 'index') {
+      renderer.clearIndexVisualization()
+    }
+  }
+}
+
+// 清空搜索
+const clearSearch = () => {
+  searchFileName.value = ''
+  searchedFile.value = null
+  if (renderer && currentView.value === 'index') {
+    renderer.clearIndexVisualization()
+  }
+  // 清空后重新聚焦输入框
+  if (searchInputRef.value) {
+    searchInputRef.value.focus()
+  }
+}
+
+// 全选文本
+const selectAllText = (event) => {
+  if (searchInputRef.value) {
+    event.preventDefault()
+    searchInputRef.value.select()
+  }
+}
+
+// 获取分配算法名称
+const getAlgorithmName = (algorithm) => {
+  const names = {
+    'continuous': '连续分配',
+    'linked': '链式分配',
+    'indexed': '索引分配'
+  }
+  return names[algorithm] || '未知'
 }
 
 // 格式化文件大小
@@ -418,6 +542,43 @@ watch(
   },
   { immediate: true }
 )
+
+// 监听视图切换，自动聚焦搜索框
+watch(
+  () => currentView.value,
+  (newView) => {
+    if (newView === 'index' && !props.showTerminal) {
+      // 延迟聚焦，确保DOM已更新
+      nextTick(() => {
+        setTimeout(() => {
+          if (searchInputRef.value) {
+            searchInputRef.value.focus()
+            // 如果有文本，选中所有文本以便快速替换
+            if (searchFileName.value) {
+              searchInputRef.value.select()
+            }
+          }
+        }, 100)
+      })
+    }
+  }
+)
+
+// 监听终端显示状态，当终端关闭且当前在索引视图时，聚焦搜索框
+watch(
+  () => props.showTerminal,
+  (isTerminalOpen) => {
+    if (!isTerminalOpen && currentView.value === 'index') {
+      nextTick(() => {
+        setTimeout(() => {
+          if (searchInputRef.value) {
+            searchInputRef.value.focus()
+          }
+        }, 100)
+      })
+    }
+  }
+)
 </script>
 
 <style scoped>
@@ -641,6 +802,115 @@ watch(
 
 .view-switch-btn span {
   font-size: 0.75rem;
+  font-weight: 500;
+}
+
+/* 索引搜索框样式 */
+.index-search-box {
+  position: absolute;
+  bottom: 1rem;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 200;
+  width: 90%;
+  max-width: 600px;
+}
+
+.search-box-content {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.75rem 1rem;
+  background: rgba(255, 255, 255, 0.15);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 12px;
+  box-shadow: 0 8px 32px 0 rgba(31, 38, 135, 0.37);
+}
+
+.search-icon {
+  color: rgba(255, 255, 255, 0.7);
+  font-size: 1rem;
+}
+
+.search-input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: rgba(255, 255, 255, 0.9);
+  font-size: 0.875rem;
+  padding: 0.25rem 0;
+  /* 确保文本可以选中 */
+  user-select: text !important;
+  -webkit-user-select: text !important;
+  -moz-user-select: text !important;
+  -ms-user-select: text !important;
+  /* 优化文本选中样式 */
+  cursor: text;
+  /* 选中文本的背景色 */
+  transition: color 0.2s;
+}
+
+.search-input::selection {
+  background-color: rgba(59, 130, 246, 0.6);
+  color: rgba(255, 255, 255, 1);
+}
+
+.search-input::-moz-selection {
+  background-color: rgba(59, 130, 246, 0.6);
+  color: rgba(255, 255, 255, 1);
+}
+
+.search-input:focus {
+  color: rgba(255, 255, 255, 1);
+}
+
+.search-input::placeholder {
+  color: rgba(255, 255, 255, 0.5);
+}
+
+.clear-btn {
+  background: transparent;
+  border: none;
+  color: rgba(255, 255, 255, 0.7);
+  cursor: pointer;
+  padding: 0.25rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.2s;
+}
+
+.clear-btn:hover {
+  color: rgba(255, 255, 255, 0.9);
+}
+
+.search-result-info {
+  margin-top: 0.5rem;
+  padding: 0.5rem 1rem;
+  background: rgba(59, 130, 246, 0.2);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1px solid rgba(59, 130, 246, 0.3);
+  border-radius: 8px;
+  color: rgba(255, 255, 255, 0.9);
+  font-size: 0.875rem;
+}
+
+.result-label {
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.result-name {
+  color: rgba(147, 197, 253, 1);
+  font-weight: 600;
+  margin: 0 0.25rem;
+}
+
+.result-algorithm {
+  color: rgba(251, 188, 5, 1);
   font-weight: 500;
 }
 </style>
