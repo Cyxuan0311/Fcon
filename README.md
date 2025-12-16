@@ -1,4 +1,8 @@
-# 文件系统可视化项目
+<center>
+
+# Fcon:文件系统可视化项目
+
+[English](./README_EN.md) | [中文](./README.md)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 [![Vue 3](https://img.shields.io/badge/Vue-3.4+-4FC08D?logo=vue.js)](https://vuejs.org/)
@@ -7,7 +11,19 @@
 [![C++](https://img.shields.io/badge/C++-17+-00599C?logo=cplusplus)](https://isocpp.org/)
 [![CMake](https://img.shields.io/badge/CMake-3.15+-064F8C?logo=cmake)](https://cmake.org/)
 
+</center>
+
 一个基于Vue3 + Three.js的交互式文件系统可视化教学工具，通过3D可视化展示文件系统的核心原理和操作过程。
+
+## 📸 项目演示
+
+<div align="center">
+
+![项目演示](./image/demo.png)
+
+*文件系统可视化界面演示*
+
+</div>
 
 ## ✨ 特性
 
@@ -89,77 +105,26 @@ file_system_view/
 - 多种图表展示
 - 数据导出功能
 
+> 💡 **提示**: 更多详细功能说明请查看 [功能特性文档](./docs/features.md)
+
 ## 📝 命令行工具 (fcon)
 
 项目包含一个C++命令行工具 `fcon`，用于扫描Linux文件系统并生成JSON配置文件，方便快速导入文件系统数据。
 
-### 功能特性
-
-- 🔍 **文件系统扫描**: 递归扫描目录或单个文件
-- 📄 **JSON生成**: 自动生成符合项目格式的JSON配置文件
-- ⚙️ **灵活配置**: 支持自定义块大小和文件系统类型
-- 📊 **自动计算**: 自动计算碎片率和块分配
-- 🎯 **多种算法**: 支持连续分配、链接分配、索引分配算法
-
-### 快速开始
-
-#### 安装依赖
+### 快速使用
 
 ```bash
-cd cli
-# 安装nlohmann-json库（推荐使用系统包管理器）
-sudo apt-get install nlohmann-json3-dev  # Ubuntu/Debian
-# 或下载到本地
-git clone https://github.com/nlohmann/json.git third_party/nlohmann_json
-```
+# 编译
+cd cli && mkdir build && cd build && cmake .. && make
 
-#### 编译
-
-```bash
-cd cli
-mkdir build && cd build
-cmake ..
-make
-```
-
-#### 使用示例
-
-```bash
 # 扫描目录
 ./bin/fcon /home/user/documents
 
-# 指定输出文件和参数
-./bin/fcon /home/user/documents -o output.json -b 4 -t FAT32
-
-# 扫描单个文件
-./bin/fcon /path/to/file.txt
+# 指定参数
+./bin/fcon /path/to/dir -o output.json -b 4 -t FAT32
 ```
 
-### 命令行选项
-
-- `-o, --output <文件>`: 指定输出JSON文件路径（默认: filesystem.json）
-- `-b, --block-size <大小>`: 指定块大小，单位KB（默认: 4）
-- `-t, --type <类型>`: 指定文件系统类型（FAT32/Ext4/NTFS，默认: FAT32）
-- `-h, --help`: 显示帮助信息
-
-### 输出格式
-
-生成的JSON文件可以直接导入到可视化工具中使用，格式如下：
-
-```json
-{
-  "fileSystemType": "FAT32",
-  "disk": {
-    "totalBlocks": 1000,
-    "blockSize": 4096,
-    "fragmentRate": 5.2,
-    "freeBlocks": [...],
-    "files": [...]
-  }
-}
-```
-
-详细说明请查看 [cli/README.md](./cli/README.md)
+> 📖 **详细文档**: 完整的命令行工具使用说明、功能特性、参数选项和输出格式，请查看 [cli/README.md](./cli/README.md)
 
 ## 🤝 贡献
 
