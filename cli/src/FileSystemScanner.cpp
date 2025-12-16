@@ -8,6 +8,20 @@
 #include <algorithm>
 #include <ctime>
 #include <thread>
+#ifdef _WIN32
+#include <windows.h>
+#include <sddl.h>
+#else
+#include <sys/stat.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <sys/ioctl.h>
+#include <errno.h>
+#include <linux/fs.h>
+#include <cstdlib>
+#include <cstring>
+// fiemap.h 已在头文件中包含
+#endif
 
 FileSystemScanner::FileSystemScanner(size_t blockSize, const std::string& fileSystemType)
     : blockSize_(blockSize)
@@ -22,6 +36,8 @@ FileSystemScanner::FileSystemScanner(size_t blockSize, const std::string& fileSy
     , stopWorkers_(false)
     , numThreads_(std::max(1u, std::thread::hardware_concurrency()))  // 使用CPU核心数
     , progressCallback_(nullptr)
+    , autoSuggestRoot_(false)
+    , rootSuggestionShown_(false)
 {
 }
 
@@ -54,6 +70,11 @@ void FileSystemScanner::scanDirectory(const std::string& path) {
     rootDir.parentId = "";
     rootDir.createTime = getFileTime(rootPath);
     rootDir.allocationAlgorithm = "";
+    rootDir.inode = 0;
+    rootDir.deviceId = 0;
+    rootDir.physicalPath = fs::absolute(rootPath).string();
+    rootDir.extents.clear();
+    getPhysicalAddress(rootPath, rootDir);
     files_.push_back(rootDir);
     directoryCount_++;
     notifyProgress();
@@ -104,7 +125,20 @@ void FileSystemScanner::scanFile(const std::string& path) {
     
     file.parentId = "root";
     file.blocks = allocateBlocks(file.size);
-    file.allocationAlgorithm = "continuous";
+    file.inode = 0;
+    file.deviceId = 0;
+    file.physicalPath = fs::absolute(filePath).string();
+    file.extents.clear();
+    getPhysicalAddress(filePath, file);
+    if (file.type == "file") {
+        getIndexAddress(filePath, file);
+        // getIndexAddress 内部会设置 allocationAlgorithm
+        if (file.allocationAlgorithm.empty()) {
+            file.allocationAlgorithm = "continuous";  // 如果无法判断，默认连续
+        }
+    } else {
+        file.allocationAlgorithm = "";
+    }
     
     files_.push_back(file);
     fileCount_++;
@@ -127,6 +161,11 @@ void FileSystemScanner::scanDirectoryRecursive(const fs::path& path, const std::
                     dir.createTime = getFileTime(entry.path());
                     dir.allocationAlgorithm = "";
                     dir.blocks = {};
+                    dir.inode = 0;
+                    dir.deviceId = 0;
+                    dir.physicalPath = fs::absolute(entry.path()).string();
+                    dir.extents.clear();
+                    getPhysicalAddress(entry.path(), dir);
                     
                     files_.push_back(dir);
                     directoryCount_++;
@@ -151,7 +190,16 @@ void FileSystemScanner::scanDirectoryRecursive(const fs::path& path, const std::
                     
                     file.parentId = parentId;
                     file.blocks = allocateBlocks(file.size);
-                    file.allocationAlgorithm = "continuous";
+                    file.inode = 0;
+                    file.deviceId = 0;
+                    file.physicalPath = fs::absolute(entry.path()).string();
+                    file.extents.clear();
+                    getPhysicalAddress(entry.path(), file);
+                    getIndexAddress(entry.path(), file);
+                    // getIndexAddress 内部会设置 allocationAlgorithm
+                    if (file.allocationAlgorithm.empty()) {
+                        file.allocationAlgorithm = "continuous";  // 如果无法判断，默认连续
+                    }
                     
                     files_.push_back(file);
                     fileCount_++;
@@ -319,6 +367,11 @@ void FileSystemScanner::processDirectoryEntry(const fs::path& entryPath, const s
             dir.createTime = getFileTime(entryPath);
             dir.allocationAlgorithm = "";
             dir.blocks = {};
+            dir.inode = 0;
+            dir.deviceId = 0;
+            dir.physicalPath = fs::absolute(entryPath).string();
+            dir.extents.clear();
+            getPhysicalAddress(entryPath, dir);
             
             {
                 std::lock_guard<std::mutex> lock(filesMutex_);
@@ -352,7 +405,16 @@ void FileSystemScanner::processDirectoryEntry(const fs::path& entryPath, const s
             
             file.parentId = parentId;
             file.blocks = allocateBlocksThreadSafe(file.size);
-            file.allocationAlgorithm = "continuous";
+            file.inode = 0;
+            file.deviceId = 0;
+            file.physicalPath = fs::absolute(entryPath).string();
+            file.extents.clear();
+            getPhysicalAddress(entryPath, file);
+            getIndexAddress(entryPath, file);
+            // getIndexAddress 内部会设置 allocationAlgorithm
+            if (file.allocationAlgorithm.empty()) {
+                file.allocationAlgorithm = "continuous";  // 如果无法判断，默认连续
+            }
             
             {
                 std::lock_guard<std::mutex> lock(filesMutex_);
@@ -480,6 +542,425 @@ std::string FileSystemScanner::getFileTime(const fs::path& path) {
     return oss.str();
 }
 
+void FileSystemScanner::getPhysicalAddress(const fs::path& path, FileEntry& entry) {
+    try {
+#ifdef _WIN32
+        // Windows 系统：使用 GetFileInformationByHandle 获取文件信息
+        HANDLE hFile = CreateFileW(
+            path.wstring().c_str(),
+            GENERIC_READ,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            NULL,
+            OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS,  // 允许打开目录
+            NULL
+        );
+        
+        if (hFile != INVALID_HANDLE_VALUE) {
+            BY_HANDLE_FILE_INFORMATION fileInfo;
+            if (GetFileInformationByHandle(hFile, &fileInfo)) {
+                // Windows 使用文件索引号作为 inode 的等价物
+                // 将两个 DWORD 合并为一个 64 位值
+                entry.inode = (static_cast<unsigned long long>(fileInfo.nFileIndexHigh) << 32) | 
+                              static_cast<unsigned long long>(fileInfo.nFileIndexLow);
+                entry.deviceId = (static_cast<unsigned long long>(fileInfo.dwVolumeSerialNumber));
+            }
+            CloseHandle(hFile);
+        }
+#else
+        // Linux/Unix 系统：使用 stat 系统调用
+        struct stat fileStat;
+        if (stat(path.c_str(), &fileStat) == 0) {
+            entry.inode = static_cast<unsigned long long>(fileStat.st_ino);
+            entry.deviceId = static_cast<unsigned long long>(fileStat.st_dev);
+        }
+#endif
+    } catch (const std::exception& e) {
+        // 如果获取失败，保持默认值（0）
+        std::cerr << "警告: 无法获取物理地址信息 " << path << ": " << e.what() << "\n";
+    }
+}
+
+void FileSystemScanner::getIndexAddress(const fs::path& path, FileEntry& entry) {
+    // 只处理文件，目录没有索引地址
+    if (entry.type != "file" || entry.size == 0) {
+        return;
+    }
+    
+    try {
+        // 静默失败，不输出警告（某些文件系统不支持 extent 查询是正常的）
+#ifdef _WIN32
+        // Windows 系统：使用 FSCTL_GET_RETRIEVAL_POINTERS 获取簇映射
+        HANDLE hFile = CreateFileW(
+            path.wstring().c_str(),
+            GENERIC_READ,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            NULL,
+            OPEN_EXISTING,
+            FILE_FLAG_NO_BUFFERING,
+            NULL
+        );
+        
+        if (hFile != INVALID_HANDLE_VALUE) {
+            // 获取卷信息以确定簇大小
+            DWORD sectorsPerCluster, bytesPerSector, numberOfFreeClusters, totalNumberOfClusters;
+            std::wstring rootPath = path.root_path().wstring();
+            if (rootPath.empty()) {
+                // 如果 root_path() 为空，尝试从完整路径提取根路径
+                std::wstring fullPath = path.wstring();
+                size_t pos = fullPath.find(L'\\');
+                if (pos != std::wstring::npos) {
+                    rootPath = fullPath.substr(0, pos + 1);
+                } else {
+                    rootPath = L"C:\\"; // 默认值
+                }
+            }
+            
+            if (GetDiskFreeSpaceW(
+                rootPath.c_str(),
+                &sectorsPerCluster,
+                &bytesPerSector,
+                &numberOfFreeClusters,
+                &totalNumberOfClusters
+            )) {
+                DWORD clusterSize = sectorsPerCluster * bytesPerSector;
+                
+                // 准备获取检索指针
+                STARTING_VCN_INPUT_BUFFER inputBuffer;
+                inputBuffer.StartingVcn.QuadPart = 0;
+                
+                // 分配缓冲区
+                DWORD bufferSize = sizeof(RETRIEVAL_POINTERS_BUFFER) + (entry.size / clusterSize + 1) * sizeof(LARGE_INTEGER);
+                std::vector<BYTE> buffer(bufferSize);
+                RETRIEVAL_POINTERS_BUFFER* outputBuffer = reinterpret_cast<RETRIEVAL_POINTERS_BUFFER*>(buffer.data());
+                
+                DWORD bytesReturned;
+                if (DeviceIoControl(
+                    hFile,
+                    FSCTL_GET_RETRIEVAL_POINTERS,
+                    &inputBuffer,
+                    sizeof(inputBuffer),
+                    outputBuffer,
+                    bufferSize,
+                    &bytesReturned,
+                    NULL
+                )) {
+                    // 解析检索指针
+                    ULONGLONG currentVcn = outputBuffer->StartingVcn.QuadPart;
+                    DWORD extentCount = outputBuffer->ExtentCount;
+                    
+                    for (DWORD i = 0; i < extentCount; i++) {
+                        ExtentInfo extent;
+                        extent.logicalOffset = currentVcn * clusterSize;
+                        extent.physicalOffset = outputBuffer->Extents[i].Lcn.QuadPart * clusterSize;
+                        extent.length = outputBuffer->Extents[i].NextVcn.QuadPart * clusterSize - extent.logicalOffset;
+                        
+                        if (extent.length > 0 && extent.physicalOffset != (ULONGLONG)-1) {
+                            entry.extents.push_back(extent);
+                        }
+                        
+                        currentVcn = outputBuffer->Extents[i].NextVcn.QuadPart;
+                    }
+                }
+            }
+            CloseHandle(hFile);
+        }
+#else
+        // Linux 系统：使用 FIEMAP ioctl 获取 extent 映射
+        int fd = open(path.c_str(), O_RDONLY);
+        if (fd >= 0) {
+            // 获取文件系统块大小
+            struct stat fileStat;
+            if (fstat(fd, &fileStat) == 0) {
+                unsigned long blockSize = fileStat.st_blksize;
+                if (blockSize == 0) {
+                    blockSize = 4096; // 默认 4KB
+                }
+                
+                // 准备 FIEMAP 请求
+                struct fiemap* fiemap = nullptr;
+                size_t fiemapSize = sizeof(struct fiemap) + sizeof(struct fiemap_extent);
+                fiemap = (struct fiemap*)malloc(fiemapSize);
+                if (fiemap) {
+                    memset(fiemap, 0, fiemapSize);
+                    fiemap->fm_start = 0;
+                    fiemap->fm_length = entry.size;
+                    fiemap->fm_flags = FIEMAP_FLAG_SYNC;
+                    fiemap->fm_extent_count = 1;
+                    
+                    // 循环获取所有 extent
+                    unsigned long long offset = 0;
+                    while (offset < entry.size) {
+                        fiemap->fm_start = offset;
+                        fiemap->fm_length = entry.size - offset;
+                        
+                        if (ioctl(fd, FS_IOC_FIEMAP, fiemap) == 0) {
+                            if (fiemap->fm_mapped_extents == 0) {
+                                break; // 没有更多 extent
+                            }
+                            
+                            // 处理获取到的 extent
+                            for (unsigned int i = 0; i < fiemap->fm_mapped_extents; i++) {
+                                ExtentInfo extent;
+                                extent.logicalOffset = fiemap->fm_extents[i].fe_logical;
+                                extent.physicalOffset = fiemap->fm_extents[i].fe_physical;
+                                extent.length = fiemap->fm_extents[i].fe_length;
+                                
+                                entry.extents.push_back(extent);
+                                offset = fiemap->fm_extents[i].fe_logical + fiemap->fm_extents[i].fe_length;
+                            }
+                            
+                            // 如果还有更多 extent，需要重新分配更大的缓冲区
+                            if (fiemap->fm_flags & FIEMAP_FLAG_MORE) {
+                                // 扩展缓冲区以获取更多 extent
+                                size_t newSize = sizeof(struct fiemap) + 
+                                                (fiemap->fm_mapped_extents + 1) * sizeof(struct fiemap_extent);
+                                struct fiemap* newFiemap = (struct fiemap*)realloc(fiemap, newSize);
+                                if (newFiemap) {
+                                    fiemap = newFiemap;
+                                    memset((char*)fiemap + fiemapSize, 0, newSize - fiemapSize);
+                                    fiemap->fm_extent_count = fiemap->fm_mapped_extents + 1;
+                                    fiemapSize = newSize;
+                                } else {
+                                    break; // 内存分配失败
+                                }
+                            } else {
+                                break; // 没有更多 extent
+                            }
+                        } else {
+                            // ioctl 失败，可能不支持 FIEMAP，尝试使用 FIBMAP（较老的方法）
+                            // 注意：FIBMAP 需要 root 权限，在 WSL2 中可能无法使用
+                            if (errno == ENOTTY || errno == EOPNOTSUPP || errno == EPERM) {
+                                // 不支持 FIEMAP 或没有权限，尝试使用 FIBMAP 作为后备方案
+                                // FIBMAP 需要 root 权限
+                                bool permissionIssue = (errno == EPERM && !hasRootPrivileges());
+                                
+                                if (permissionIssue && autoSuggestRoot_ && !rootSuggestionShown_) {
+                                    // 只在第一次遇到权限问题时提示一次
+                                    rootSuggestionShown_ = true;
+                                    std::cerr << "\n提示: 检测到权限不足，无法获取真实的文件物理块映射信息。\n";
+                                    std::cerr << "      使用 sudo 运行程序可获取更准确的信息。\n\n";
+                                }
+                                
+                                unsigned long blockNum = 0;
+                                unsigned long long fileOffset = 0;
+                                bool fibmapWorked = false;
+                                
+                                while (fileOffset < entry.size && blockNum < 100) {  // 限制检查的块数
+                                    int blockIndex = static_cast<int>(fileOffset / blockSize);
+                                    if (ioctl(fd, FIBMAP, &blockIndex) == 0 && blockIndex != 0) {
+                                        fibmapWorked = true;
+                                        ExtentInfo extent;
+                                        extent.logicalOffset = fileOffset;
+                                        extent.physicalOffset = static_cast<unsigned long long>(blockIndex) * blockSize;
+                                        extent.length = blockSize;
+                                        
+                                        // 尝试合并连续的块
+                                        if (!entry.extents.empty() && 
+                                            entry.extents.back().physicalOffset + entry.extents.back().length == extent.physicalOffset &&
+                                            entry.extents.back().logicalOffset + entry.extents.back().length == extent.logicalOffset) {
+                                            entry.extents.back().length += extent.length;
+                                        } else {
+                                            entry.extents.push_back(extent);
+                                        }
+                                    } else {
+                                        // FIBMAP 失败（可能是权限问题），停止尝试
+                                        break;
+                                    }
+                                    fileOffset += blockSize;
+                                    blockNum++;
+                                }
+                            }
+                            // 静默失败，不输出错误（某些文件系统不支持是正常的）
+                            break;
+                        }
+                    }
+                    if (fiemap) {
+                        free(fiemap);
+                        fiemap = nullptr;
+                    }
+                }
+            }
+            close(fd);
+        }
+#endif
+    } catch (const std::exception& e) {
+        // 如果获取失败，保持 extents 为空（静默失败，某些文件系统不支持是正常的）
+        // 不输出警告，因为这在 WSL2/NTFS 等文件系统上是预期的行为
+    }
+    
+    // Fallback: 如果无法获取真实的extent信息，根据blocks数组生成模拟的extent信息
+    // 这对于不支持FIEMAP/FIBMAP的文件系统（如WSL2/NTFS）很有用
+    if (entry.extents.empty() && !entry.blocks.empty() && entry.size > 0) {
+        // 使用块大小（从disk配置或默认值）
+        unsigned long long blockSize = static_cast<unsigned long long>(blockSize_);
+        if (blockSize == 0) {
+            blockSize = 4096; // 默认4KB
+        }
+        
+        // 根据blocks数组生成extent信息
+        // 对于连续分配，blocks数组中的值就是物理块号
+        // 对于链式或索引分配，我们假设blocks数组中的值也是物理块号
+        unsigned long long logicalOffset = 0;
+        
+        // 优化：合并连续的块为单个extent
+        for (size_t i = 0; i < entry.blocks.size(); i++) {
+            unsigned long long physicalBlock = static_cast<unsigned long long>(entry.blocks[i]);
+            unsigned long long physicalOffset = physicalBlock * blockSize;
+            
+            // 计算这个块的长度
+            unsigned long long remainingSize = entry.size - logicalOffset;
+            unsigned long long blockLength = (remainingSize < blockSize) ? remainingSize : blockSize;
+            
+            // 检查是否可以与上一个extent合并（连续分配且物理块连续）
+            if (!entry.extents.empty()) {
+                ExtentInfo& lastExtent = entry.extents.back();
+                unsigned long long expectedNextPhysical = lastExtent.physicalOffset + lastExtent.length;
+                unsigned long long expectedNextLogical = lastExtent.logicalOffset + lastExtent.length;
+                
+                // 如果物理块和逻辑块都连续，合并extent
+                if (physicalOffset == expectedNextPhysical && logicalOffset == expectedNextLogical) {
+                    lastExtent.length += blockLength;
+                    logicalOffset += blockLength;
+                    continue;
+                }
+            }
+            
+            // 创建新的extent
+            ExtentInfo extent;
+            extent.logicalOffset = logicalOffset;
+            extent.physicalOffset = physicalOffset;
+            extent.length = blockLength;
+            entry.extents.push_back(extent);
+            
+            logicalOffset += blockLength;
+            
+            // 如果已经覆盖了整个文件，停止
+            if (logicalOffset >= entry.size) {
+                break;
+            }
+        }
+    }
+    
+    // 根据 extent 信息判断分配算法
+    entry.allocationAlgorithm = determineAllocationAlgorithm(entry);
+}
+
+std::string FileSystemScanner::determineAllocationAlgorithm(const FileEntry& entry) {
+    // 目录没有分配算法
+    if (entry.type != "file" || entry.size == 0) {
+        return "";
+    }
+    
+    // 优先根据 extent 信息判断
+    if (!entry.extents.empty()) {
+        // 计算 extent 覆盖的总长度
+        unsigned long long totalExtentLength = 0;
+        for (const auto& extent : entry.extents) {
+            totalExtentLength += extent.length;
+        }
+        
+        // 如果只有一个 extent，且覆盖整个文件（或接近），则是连续分配
+        if (entry.extents.size() == 1) {
+            const auto& extent = entry.extents[0];
+            // 检查 extent 是否从文件开头开始，且长度覆盖整个文件（允许小的误差）
+            if (extent.logicalOffset == 0 && 
+                (extent.length >= entry.size || 
+                 (extent.length >= entry.size * 0.95))) {  // 允许5%的误差
+                return "continuous";
+            }
+        }
+        
+        // 如果有多个 extent，则是非连续分配
+        // 根据 extent 数量判断是链式还是索引分配
+        if (entry.extents.size() > 1) {
+            // 如果 extent 数量较少（<= 10），可能是索引分配
+            // 如果 extent 数量很多，可能是链式分配
+            // 这里我们使用一个简单的阈值
+            if (entry.extents.size() <= 10) {
+                return "indexed";
+            } else {
+                return "linked";
+            }
+        }
+        
+        // 如果只有一个 extent 但不完全覆盖，可能是部分连续
+        return "continuous";
+    }
+    
+    // 如果没有 extent 信息，根据 blocks 数组判断
+    if (!entry.blocks.empty()) {
+        // 检查 blocks 数组是否连续
+        bool isContinuous = true;
+        for (size_t i = 1; i < entry.blocks.size(); i++) {
+            if (entry.blocks[i] != entry.blocks[i-1] + 1) {
+                isContinuous = false;
+                break;
+            }
+        }
+        
+        if (isContinuous) {
+            return "continuous";
+        } else {
+            // 根据块数量判断是链式还是索引分配
+            if (entry.blocks.size() <= 10) {
+                return "indexed";
+            } else {
+                return "linked";
+            }
+        }
+    }
+    
+    // 如果既没有 extent 也没有 blocks，无法判断
+    return "";
+}
+
+bool FileSystemScanner::hasRootPrivileges() {
+#ifdef _WIN32
+    // Windows: 检查是否有管理员权限
+    BOOL isAdmin = FALSE;
+    PSID adminGroup = nullptr;
+    SID_IDENTIFIER_AUTHORITY ntAuthority = SECURITY_NT_AUTHORITY;
+    
+    if (AllocateAndInitializeSid(&ntAuthority, 2, SECURITY_BUILTIN_DOMAIN_RID,
+                                 DOMAIN_ALIAS_RID_ADMINS, 0, 0, 0, 0, 0, 0, &adminGroup)) {
+        CheckTokenMembership(nullptr, adminGroup, &isAdmin);
+        FreeSid(adminGroup);
+    }
+    
+    return isAdmin == TRUE;
+#else
+    // Linux/Unix: 检查是否是 root 用户 (UID 0)
+    return geteuid() == 0;
+#endif
+}
+
+void FileSystemScanner::suggestSudoUsage() {
+#ifndef _WIN32
+    if (!hasRootPrivileges()) {
+        std::cerr << "\n";
+        std::cerr << "═══════════════════════════════════════════════════════════════\n";
+        std::cerr << "提示: 需要 root 权限以获取更准确的文件分配信息\n";
+        std::cerr << "═══════════════════════════════════════════════════════════════\n";
+        std::cerr << "某些文件系统操作（如 FIBMAP）需要 root 权限才能获取真实的\n";
+        std::cerr << "文件物理块映射信息。如果当前没有 root 权限，程序将使用模拟\n";
+        std::cerr << "的块分配信息，可能无法准确反映文件的真实分配状态。\n\n";
+        
+        // 尝试获取程序名称
+        const char* programName = std::getenv("_");
+        if (!programName) {
+            programName = "filesystem-scanner";
+        }
+        
+        std::cerr << "要获取更准确的信息，请使用 sudo 运行程序：\n";
+        std::cerr << "  sudo " << programName << " <参数>\n\n";
+        std::cerr << "或者使用 --require-root 选项，程序会在需要时提示您。\n";
+        std::cerr << "═══════════════════════════════════════════════════════════════\n";
+        std::cerr << "\n";
+    }
+#endif
+}
+
 void FileSystemScanner::generateJSON(const std::string& outputPath) {
     nlohmann::json json;
     
@@ -527,6 +1008,26 @@ void FileSystemScanner::generateJSON(const std::string& outputPath) {
             fileJson["blocks"] = file.blocks;
             fileJson["parentId"] = file.parentId;
             fileJson["createTime"] = file.createTime;
+            
+            // 添加物理地址信息
+            fileJson["inode"] = file.inode;
+            fileJson["deviceId"] = file.deviceId;
+            fileJson["physicalPath"] = file.physicalPath;
+            
+            // 添加索引地址信息（extent 映射）
+            if (!file.extents.empty()) {
+                nlohmann::json extentsArray = nlohmann::json::array();
+                for (const auto& extent : file.extents) {
+                    nlohmann::json extentJson;
+                    extentJson["logicalOffset"] = extent.logicalOffset;
+                    extentJson["physicalOffset"] = extent.physicalOffset;
+                    extentJson["length"] = extent.length;
+                    extentsArray.push_back(extentJson);
+                }
+                fileJson["extents"] = extentsArray;
+            } else {
+                fileJson["extents"] = nlohmann::json::array();
+            }
             
             if (file.type == "file" && !file.allocationAlgorithm.empty()) {
                 fileJson["allocationAlgorithm"] = file.allocationAlgorithm;

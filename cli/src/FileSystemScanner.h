@@ -13,8 +13,41 @@
 #include <condition_variable>
 #include <future>
 #include <functional>
+#ifdef _WIN32
+#include <windows.h>
+#include <winioctl.h>
+#else
+#include <sys/stat.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <sys/ioctl.h>
+#include <linux/fs.h>
+// 尝试包含 fiemap.h，如果不存在则手动定义
+#ifdef __has_include
+#if __has_include(<linux/fiemap.h>)
+#include <linux/fiemap.h>
+#endif
+#else
+// 如果没有 __has_include，尝试直接包含
+#include <linux/fiemap.h>
+#endif
+// 确保 FIEMAP 标志已定义
+#ifndef FIEMAP_FLAG_SYNC
+#define FIEMAP_FLAG_SYNC 0x00000001
+#endif
+#ifndef FIEMAP_FLAG_MORE
+#define FIEMAP_FLAG_MORE 0x00000002
+#endif
+#endif // _WIN32
 
 namespace fs = std::filesystem;
+
+// 文件索引地址结构（extent）
+struct ExtentInfo {
+    unsigned long long logicalOffset;   // 逻辑偏移（文件内的字节偏移）
+    unsigned long long physicalOffset; // 物理偏移（磁盘上的块号）
+    unsigned long long length;         // 长度（字节数）
+};
 
 struct FileEntry {
     std::string id;
@@ -25,6 +58,12 @@ struct FileEntry {
     std::string parentId;
     std::string createTime;
     std::string allocationAlgorithm;  // "continuous", "linked", "indexed", or null for directories
+    // 物理地址信息
+    unsigned long long inode;      // inode 号（Linux）或文件索引号（Windows）
+    unsigned long long deviceId;    // 设备ID
+    std::string physicalPath;      // 物理路径（完整路径）
+    // 索引地址信息（extent 映射）
+    std::vector<ExtentInfo> extents;  // 文件的 extent 列表
 };
 
 class FileSystemScanner {
@@ -51,6 +90,15 @@ public:
     size_t getDirectoryCount() const { return directoryCount_.load(); }
     size_t getTotalSize() const { return totalSize_.load(); }
     size_t getTotalBlocks() const { return totalBlocks_.load(); }
+    
+    // 检查是否有 root 权限
+    static bool hasRootPrivileges();
+    
+    // 尝试使用 sudo 执行命令（仅用于提示）
+    static void suggestSudoUsage();
+    
+    // 设置是否在权限不足时自动提示
+    void setAutoSuggestRoot(bool enable) { autoSuggestRoot_ = enable; }
 
 private:
     // 扫描目录（递归）
@@ -73,6 +121,15 @@ private:
     
     // 获取文件系统时间（兼容不同C++标准）
     std::string getFileTime(const fs::path& path);
+    
+    // 获取文件的物理地址信息（inode、设备ID等）
+    void getPhysicalAddress(const fs::path& path, FileEntry& entry);
+    
+    // 获取文件的索引地址信息（extent 映射）
+    void getIndexAddress(const fs::path& path, FileEntry& entry);
+    
+    // 根据 extent 信息判断分配算法
+    std::string determineAllocationAlgorithm(const FileEntry& entry);
 
 private:
     // 多线程扫描目录（并行版本）
@@ -124,6 +181,12 @@ private:
     
     // 进度回调
     ProgressCallback progressCallback_;
+    
+    // 是否在权限不足时自动提示
+    bool autoSuggestRoot_;
+    
+    // 是否已经提示过权限问题（避免重复提示）
+    mutable bool rootSuggestionShown_;
     
     // 通知进度更新
     void notifyProgress();

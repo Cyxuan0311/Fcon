@@ -7,6 +7,7 @@
 #include <iomanip>
 #include <sstream>
 #include <thread>
+#include <cstdlib>
 #include "FileSystemScanner.h"
 #include "ProgressBar.h"
 
@@ -18,6 +19,7 @@ void printUsage(const char* programName) {
     std::cout << "  -o, --output <文件>    指定输出JSON文件路径 (默认: filesystem.json)\n";
     std::cout << "  -b, --block-size <大小> 指定块大小，单位KB (默认: 4)\n";
     std::cout << "  -t, --type <类型>      指定文件系统类型 (FAT32/Ext4/NTFS, 默认: FAT32)\n";
+    std::cout << "  -r, --require-root     提示需要 root 权限以获取更准确的文件分配信息\n";
     std::cout << "  -h, --help             显示此帮助信息\n\n";
     std::cout << "示例:\n";
     #ifdef _WIN32
@@ -42,6 +44,7 @@ int main(int argc, char* argv[]) {
     std::string outputPath = "filesystem.json";
     int blockSizeKB = 4;
     std::string fileSystemType = "FAT32";
+    bool requireRoot = false;
 
     // 解析命令行参数
     for (int i = 1; i < argc; i++) {
@@ -80,6 +83,8 @@ int main(int argc, char* argv[]) {
                 std::cerr << "错误: -t 选项需要指定文件系统类型\n";
                 return 1;
             }
+        } else if (arg == "-r" || arg == "--require-root") {
+            requireRoot = true;
         } else if (arg[0] != '-') {
             // 第一个非选项参数作为输入路径
             if (inputPath.empty()) {
@@ -105,7 +110,14 @@ int main(int argc, char* argv[]) {
         std::cout << "块大小: " << blockSizeKB << " KB\n";
         std::cout << "文件系统类型: " << fileSystemType << "\n";
         std::cout << "输出文件: " << outputPath << "\n";
-        std::cout << "使用多线程加速 (线程数: " << std::thread::hardware_concurrency() << ")\n\n";
+        std::cout << "使用多线程加速 (线程数: " << std::thread::hardware_concurrency() << ")\n";
+        
+        // 检查 root 权限并提示
+        if (requireRoot) {
+            FileSystemScanner::suggestSudoUsage();
+        }
+        
+        std::cout << "\n";
 
         // 创建进度条
         ProgressBar progressBar("扫描进度");
@@ -113,6 +125,9 @@ int main(int argc, char* argv[]) {
         
         // 创建扫描器
         FileSystemScanner scanner(blockSizeKB * 1024, fileSystemType);
+        
+        // 设置是否自动提示 root 权限（如果使用 --require-root 选项）
+        scanner.setAutoSuggestRoot(requireRoot);
         
         // 设置进度回调
         scanner.setProgressCallback([&progressBar](size_t files, size_t dirs, size_t totalSize) {
