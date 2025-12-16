@@ -5,6 +5,7 @@
 [English](./README_EN.md) | [中文](./README.md)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
+[![Live Demo](https://img.shields.io/badge/Live%20Demo-在线体验-00C7B7?style=flat&logo=netlify)](https://fcon-viewer.netlify.app/)
 [![Vue 3](https://img.shields.io/badge/Vue-3.4+-4FC08D?logo=vue.js)](https://vuejs.org/)
 [![Three.js](https://img.shields.io/badge/Three.js-0.161+-000000?logo=three.js)](https://threejs.org/)
 [![Node.js](https://img.shields.io/badge/Node.js-16+-339933?logo=node.js)](https://nodejs.org/)
@@ -14,6 +15,16 @@
 </center>
 
 一个基于Vue3 + Three.js的交互式文件系统可视化教学工具，通过3D可视化展示文件系统的核心原理和操作过程。
+
+## 🌐 在线演示
+
+<div align="center">
+
+**[🚀 立即体验在线版本](https://fcon-viewer.netlify.app/)**
+
+无需安装，直接在浏览器中体验完整的文件系统可视化功能！
+
+</div>
 
 ## 📸 项目演示
 
@@ -36,19 +47,23 @@
 
 ## 🚀 快速开始
 
-### 安装依赖
+> 💡 **提示**: 想要快速体验？直接访问 [在线演示](https://fcon-viewer.netlify.app/) 无需安装即可使用！
+
+### 本地开发
+
+#### 安装依赖
 
 ```bash
 npm install
 ```
 
-### 启动开发服务器
+#### 启动开发服务器
 
 ```bash
 npm run dev
 ```
 
-### 构建生产版本
+#### 构建生产版本
 
 ```bash
 npm run build
@@ -136,6 +151,7 @@ MIT License
 
 ## 🔗 相关链接
 
+- [🌐 在线演示](https://fcon-viewer.netlify.app/) - 直接在浏览器中体验
 - [Vue 3 文档](https://vuejs.org/)
 - [Three.js 文档](https://threejs.org/)
 - [Ant Design Vue](https://antdv.com/)

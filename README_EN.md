@@ -5,6 +5,7 @@
 [English](./README_EN.md) | [中文](./README.md)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
+[![Live Demo](https://img.shields.io/badge/Live%20Demo-Online%20Experience-00C7B7?style=flat&logo=netlify)](https://fcon-viewer.netlify.app/)
 [![Vue 3](https://img.shields.io/badge/Vue-3.4+-4FC08D?logo=vue.js)](https://vuejs.org/)
 [![Three.js](https://img.shields.io/badge/Three.js-0.161+-000000?logo=three.js)](https://threejs.org/)
 [![Node.js](https://img.shields.io/badge/Node.js-16+-339933?logo=node.js)](https://nodejs.org/)
@@ -14,6 +15,16 @@
 An interactive file system visualization teaching tool based on Vue3 + Three.js, demonstrating core file system principles and operations through 3D visualization.
 
 </center>
+
+## 🌐 Live Demo
+
+<div align="center">
+
+**[🚀 Try Online Version](https://fcon-viewer.netlify.app/)**
+
+Experience the complete file system visualization features directly in your browser - no installation required!
+
+</div>
 
 ## 📸 Demo
 
@@ -36,19 +47,23 @@ An interactive file system visualization teaching tool based on Vue3 + Three.js,
 
 ## 🚀 Quick Start
 
-### Install Dependencies
+> 💡 **Tip**: Want to try it quickly? Visit the [Live Demo](https://fcon-viewer.netlify.app/) - no installation needed!
+
+### Local Development
+
+#### Install Dependencies
 
 ```bash
 npm install
 ```
 
-### Start Development Server
+#### Start Development Server
 
 ```bash
 npm run dev
 ```
 
-### Build for Production
+#### Build for Production
 
 ```bash
 npm run build
@@ -136,6 +151,7 @@ MIT License
 
 ## 🔗 Related Links
 
+- [🌐 Live Demo](https://fcon-viewer.netlify.app/) - Try it in your browser
 - [Vue 3 Documentation](https://vuejs.org/)
 - [Three.js Documentation](https://threejs.org/)
 - [Ant Design Vue](https://antdv.com/)
