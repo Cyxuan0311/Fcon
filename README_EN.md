@@ -1,4 +1,8 @@
-# File System Visualization Project
+<center>
+
+# Fcon:File System Visualization Project
+
+[English](./README_EN.md) | [中文](./README.md)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 [![Vue 3](https://img.shields.io/badge/Vue-3.4+-4FC08D?logo=vue.js)](https://vuejs.org/)
@@ -8,6 +12,18 @@
 [![CMake](https://img.shields.io/badge/CMake-3.15+-064F8C?logo=cmake)](https://cmake.org/)
 
 An interactive file system visualization teaching tool based on Vue3 + Three.js, demonstrating core file system principles and operations through 3D visualization.
+
+</center>
+
+## 📸 Demo
+
+<div align="center">
+
+![Project Demo](./image/demo.png)
+
+*File System Visualization Interface Demo*
+
+</div>
 
 ## ✨ Features
 
@@ -89,77 +105,26 @@ file_system_view/
 - Multiple chart types
 - Data export functionality
 
+> 💡 **Tip**: For more detailed feature descriptions, please see [Features Documentation](./docs/features.md)
+
 ## 📝 Command Line Tool (fcon)
 
 The project includes a C++ command-line tool `fcon` for scanning Linux file systems and generating JSON configuration files, making it easy to quickly import file system data.
 
-### Features
-
-- 🔍 **File System Scanning**: Recursively scan directories or individual files
-- 📄 **JSON Generation**: Automatically generate JSON configuration files in the project format
-- ⚙️ **Flexible Configuration**: Support custom block size and file system types
-- 📊 **Auto Calculation**: Automatically calculate fragmentation rate and block allocation
-- 🎯 **Multiple Algorithms**: Support contiguous, linked, and indexed allocation algorithms
-
-### Quick Start
-
-#### Install Dependencies
+### Quick Usage
 
 ```bash
-cd cli
-# Install nlohmann-json library (recommended using system package manager)
-sudo apt-get install nlohmann-json3-dev  # Ubuntu/Debian
-# Or download to local
-git clone https://github.com/nlohmann/json.git third_party/nlohmann_json
-```
+# Build
+cd cli && mkdir build && cd build && cmake .. && make
 
-#### Build
-
-```bash
-cd cli
-mkdir build && cd build
-cmake ..
-make
-```
-
-#### Usage Examples
-
-```bash
 # Scan directory
 ./bin/fcon /home/user/documents
 
-# Specify output file and parameters
-./bin/fcon /home/user/documents -o output.json -b 4 -t FAT32
-
-# Scan single file
-./bin/fcon /path/to/file.txt
+# With parameters
+./bin/fcon /path/to/dir -o output.json -b 4 -t FAT32
 ```
 
-### Command Line Options
-
-- `-o, --output <file>`: Specify output JSON file path (default: filesystem.json)
-- `-b, --block-size <size>`: Specify block size in KB (default: 4)
-- `-t, --type <type>`: Specify file system type (FAT32/Ext4/NTFS, default: FAT32)
-- `-h, --help`: Show help information
-
-### Output Format
-
-The generated JSON file can be directly imported into the visualization tool. Format example:
-
-```json
-{
-  "fileSystemType": "FAT32",
-  "disk": {
-    "totalBlocks": 1000,
-    "blockSize": 4096,
-    "fragmentRate": 5.2,
-    "freeBlocks": [...],
-    "files": [...]
-  }
-}
-```
-
-For detailed information, please see [cli/README.md](./cli/README.md)
+> 📖 **Documentation**: For complete command-line tool usage instructions, features, options, and output format, please see [cli/README.md](./cli/README.md)
 
 ## 🤝 Contributing
 
