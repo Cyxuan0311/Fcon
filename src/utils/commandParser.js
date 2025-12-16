@@ -57,6 +57,26 @@ export class CommandParser {
           return { output: this.showHistory(args) }
         case 'echo':
           return { output: this.echoText(args) }
+        case 'cp':
+          return { output: await this.copyFile(args) }
+        case 'grep':
+          return { output: this.grepFiles(args) }
+        case 'head':
+          return { output: this.headFiles(args) }
+        case 'tail':
+          return { output: this.tailFiles(args) }
+        case 'wc':
+          return { output: this.wordCount(args) }
+        case 'sort':
+          return { output: this.sortFiles(args) }
+        case 'date':
+          return { output: this.showDate() }
+        case 'whoami':
+          return { output: this.whoAmI() }
+        case 'uname':
+          return { output: this.uname(args) }
+        case 'alias':
+          return { output: this.handleAlias(args) }
         case 'clear':
         case 'cls':
           // clear命令由组件处理，这里不需要返回
@@ -88,21 +108,33 @@ export class CommandParser {
   create <文件名>   - 创建新文件（默认大小100KB）
   rm <文件名>       - 删除文件或目录
   mv <源> <目标>    - 移动或重命名文件/目录
+  cp <源> <目标>    - 复制文件
   cat <文件名>      - 显示文件信息
   stat <文件名>     - 显示文件详细信息
 
 查找和浏览:
   find <名称>       - 在当前目录及子目录中查找文件
+  grep <模式>       - 在文件名中搜索匹配模式
   tree [目录]       - 以树形结构显示目录
   du [目录]         - 显示目录大小
+
+文件列表操作:
+  head [-n N]       - 显示文件列表前N项（默认10项）
+  tail [-n N]       - 显示文件列表后N项（默认10项）
+  sort              - 按名称排序文件列表
+  wc                - 统计文件数量、总大小等
 
 系统信息:
   df                - 显示磁盘使用情况
   info              - 显示系统信息
-  history           - 显示命令历史记录
+  date              - 显示当前日期和时间
+  whoami            - 显示当前用户信息
+  uname [-a]        - 显示系统信息
+  history [数量]     - 显示命令历史记录
 
 其他:
   echo <文本>       - 输出文本
+  alias             - 显示或设置命令别名
   help              - 显示此帮助信息
   clear, cls        - 清空终端屏幕
   exit, quit        - 退出终端
@@ -637,6 +669,297 @@ ID: ${target.id}
       return ''
     }
     return args.join(' ')
+  }
+
+  /**
+   * 复制文件（cp命令）
+   */
+  async copyFile(args) {
+    if (args.length < 2) {
+      throw new Error('用法: cp <源文件> <目标文件>')
+    }
+
+    const sourceName = args[0]
+    const targetName = args[1]
+    const currentDir = this.fileSystemStore.currentDirectory
+    const files = this.fileSystemStore.getFilesByParent(currentDir)
+    const source = files.find(f => f.name === sourceName)
+
+    if (!source) {
+      throw new Error(`文件不存在: ${sourceName}`)
+    }
+
+    if (source.type === 'directory') {
+      throw new Error('暂不支持复制目录')
+    }
+
+    // 检查目标是否已存在
+    const existingTarget = files.find(f => f.name === targetName)
+    if (existingTarget) {
+      throw new Error(`目标文件已存在: ${targetName}`)
+    }
+
+    // 创建新文件（复制）
+    const result = this.fileSystemStore.createFile({
+      name: targetName,
+      size: source.size,
+      type: 'file',
+      parentId: currentDir
+    }, source.allocationAlgorithm)
+
+    if (result.success) {
+      return `文件 "${sourceName}" 已复制为 "${targetName}"`
+    } else {
+      throw new Error(result.error)
+    }
+  }
+
+  /**
+   * 在文件名中搜索（grep命令）
+   */
+  grepFiles(args) {
+    if (args.length === 0) {
+      throw new Error('用法: grep <模式>')
+    }
+
+    const pattern = args[0].toLowerCase()
+    const currentDir = this.fileSystemStore.currentDirectory
+    const files = this.fileSystemStore.getFilesByParent(currentDir)
+    const matches = files.filter(f => f.name.toLowerCase().includes(pattern))
+
+    if (matches.length === 0) {
+      return `未找到匹配 "${args[0]}" 的文件`
+    }
+
+    let output = `找到 ${matches.length} 个匹配项:\n\n`
+    matches.forEach(item => {
+      const icon = item.type === 'directory' ? '[DIR]' : '[FILE]'
+      const size = item.type === 'file' 
+        ? this.formatSize(item.size) 
+        : `${this.fileSystemStore.getFilesByParent(item.id).length} 项`
+      output += `${icon.padEnd(8)} ${item.name.padEnd(30)} ${size.padStart(10)}\n`
+    })
+
+    return output
+  }
+
+  /**
+   * 显示文件列表前N项（head命令）
+   */
+  headFiles(args) {
+    const currentDir = this.fileSystemStore.currentDirectory
+    const files = this.fileSystemStore.getFilesByParent(currentDir)
+      .sort((a, b) => {
+        if (a.type !== b.type) {
+          return a.type === 'directory' ? -1 : 1
+        }
+        return a.name.localeCompare(b.name)
+      })
+
+    let limit = 10
+    if (args.length > 0 && args[0] === '-n' && args[1]) {
+      limit = parseInt(args[1]) || 10
+    } else if (args.length > 0 && args[0].startsWith('-')) {
+      limit = parseInt(args[0].substring(1)) || 10
+    }
+
+    const headFiles = files.slice(0, limit)
+
+    if (headFiles.length === 0) {
+      return '当前目录为空'
+    }
+
+    let output = `前 ${headFiles.length} 项:\n\n`
+    headFiles.forEach(item => {
+      const icon = item.type === 'directory' ? '[DIR]' : '[FILE]'
+      const size = item.type === 'file' 
+        ? this.formatSize(item.size) 
+        : `${this.fileSystemStore.getFilesByParent(item.id).length} 项`
+      output += `${icon.padEnd(8)} ${item.name.padEnd(30)} ${size.padStart(10)}\n`
+    })
+
+    return output
+  }
+
+  /**
+   * 显示文件列表后N项（tail命令）
+   */
+  tailFiles(args) {
+    const currentDir = this.fileSystemStore.currentDirectory
+    const files = this.fileSystemStore.getFilesByParent(currentDir)
+      .sort((a, b) => {
+        if (a.type !== b.type) {
+          return a.type === 'directory' ? -1 : 1
+        }
+        return a.name.localeCompare(b.name)
+      })
+
+    let limit = 10
+    if (args.length > 0 && args[0] === '-n' && args[1]) {
+      limit = parseInt(args[1]) || 10
+    } else if (args.length > 0 && args[0].startsWith('-')) {
+      limit = parseInt(args[0].substring(1)) || 10
+    }
+
+    const tailFiles = files.slice(-limit)
+
+    if (tailFiles.length === 0) {
+      return '当前目录为空'
+    }
+
+    let output = `后 ${tailFiles.length} 项:\n\n`
+    tailFiles.forEach(item => {
+      const icon = item.type === 'directory' ? '[DIR]' : '[FILE]'
+      const size = item.type === 'file' 
+        ? this.formatSize(item.size) 
+        : `${this.fileSystemStore.getFilesByParent(item.id).length} 项`
+      output += `${icon.padEnd(8)} ${item.name.padEnd(30)} ${size.padStart(10)}\n`
+    })
+
+    return output
+  }
+
+  /**
+   * 统计文件信息（wc命令）
+   */
+  wordCount(args) {
+    const currentDir = args.length > 0 
+      ? this.findDirectoryByName(args[0]) || this.fileSystemStore.currentDirectory
+      : this.fileSystemStore.currentDirectory
+
+    const files = this.fileSystemStore.getFilesByParent(currentDir)
+    const fileCount = files.filter(f => f.type === 'file').length
+    const dirCount = files.filter(f => f.type === 'directory').length
+    const totalSize = files
+      .filter(f => f.type === 'file')
+      .reduce((sum, f) => sum + f.size, 0)
+    const totalBlocks = files
+      .filter(f => f.type === 'file')
+      .reduce((sum, f) => sum + f.blocks.length, 0)
+
+    return `文件数: ${fileCount}
+目录数: ${dirCount}
+总大小: ${this.formatSize(totalSize)}
+总块数: ${totalBlocks}
+总计: ${files.length} 项`
+  }
+
+  /**
+   * 排序文件列表（sort命令）
+   */
+  sortFiles(args) {
+    const currentDir = this.fileSystemStore.currentDirectory
+    let files = [...this.fileSystemStore.getFilesByParent(currentDir)]
+
+    // 排序选项
+    const reverse = args.includes('-r') || args.includes('--reverse')
+    const bySize = args.includes('-s') || args.includes('--size')
+    const byTime = args.includes('-t') || args.includes('--time')
+
+    if (bySize) {
+      files.sort((a, b) => {
+        const sizeA = a.type === 'file' ? a.size : 0
+        const sizeB = b.type === 'file' ? b.size : 0
+        return reverse ? sizeB - sizeA : sizeA - sizeB
+      })
+    } else if (byTime) {
+      files.sort((a, b) => {
+        const timeA = new Date(a.createTime).getTime()
+        const timeB = new Date(b.createTime).getTime()
+        return reverse ? timeB - timeA : timeA - timeB
+      })
+    } else {
+      // 默认按名称排序
+      files.sort((a, b) => {
+        if (a.type !== b.type) {
+          return a.type === 'directory' ? -1 : 1
+        }
+        const cmp = a.name.localeCompare(b.name)
+        return reverse ? -cmp : cmp
+      })
+    }
+
+    if (files.length === 0) {
+      return '当前目录为空'
+    }
+
+    let output = `排序结果 (${files.length} 项):\n\n`
+    files.forEach(item => {
+      const icon = item.type === 'directory' ? '[DIR]' : '[FILE]'
+      const size = item.type === 'file' 
+        ? this.formatSize(item.size) 
+        : `${this.fileSystemStore.getFilesByParent(item.id).length} 项`
+      const date = this.formatDate(item.createTime)
+      output += `${icon.padEnd(8)} ${item.name.padEnd(30)} ${size.padStart(10)} ${date}\n`
+    })
+
+    return output
+  }
+
+  /**
+   * 显示日期时间（date命令）
+   */
+  showDate() {
+    const now = new Date()
+    return now.toLocaleString('zh-CN', {
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      weekday: 'long'
+    })
+  }
+
+  /**
+   * 显示当前用户信息（whoami命令）
+   */
+  whoAmI() {
+    return `用户: root
+系统: 文件系统终端
+当前目录: ${this.getPathString()}`
+  }
+
+  /**
+   * 显示系统信息（uname命令）
+   */
+  uname(args) {
+    const showAll = args.includes('-a') || args.includes('--all')
+    
+    if (showAll) {
+      return `系统名称: 文件系统终端
+节点名称: filesystem
+版本: 1.0.0
+机器: Web Browser
+处理器: JavaScript Engine
+操作系统: Web Platform`
+    } else {
+      return '文件系统终端'
+    }
+  }
+
+  /**
+   * 处理命令别名（alias命令）
+   */
+  handleAlias(args) {
+    if (args.length === 0) {
+      return `可用别名:
+  ls    -> dir
+  rm    -> delete
+  touch -> create
+  quit  -> exit
+  cls   -> clear`
+    }
+
+    if (args.length === 1 && args[0] === '--help') {
+      return `用法:
+  alias              - 显示所有别名
+  alias <名称>       - 显示指定别名
+  alias <名称>=<命令> - 设置别名（暂不支持）`
+    }
+
+    return '设置别名功能暂未实现'
   }
 
   /**
