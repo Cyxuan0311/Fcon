@@ -6,7 +6,9 @@
 #include <chrono>
 #include <iomanip>
 #include <sstream>
+#include <thread>
 #include "FileSystemScanner.h"
+#include "ProgressBar.h"
 
 namespace fs = std::filesystem;
 
@@ -18,9 +20,15 @@ void printUsage(const char* programName) {
     std::cout << "  -t, --type <类型>      指定文件系统类型 (FAT32/Ext4/NTFS, 默认: FAT32)\n";
     std::cout << "  -h, --help             显示此帮助信息\n\n";
     std::cout << "示例:\n";
+    #ifdef _WIN32
+    std::cout << "  " << programName << " C:\\Users\\Username\\Documents\n";
+    std::cout << "  " << programName << " C:\\Users\\Username\\Documents -o output.json\n";
+    std::cout << "  " << programName << " C:\\Users\\Username\\file.txt -b 8 -t Ext4\n";
+    #else
     std::cout << "  " << programName << " /home/user/documents\n";
     std::cout << "  " << programName << " /home/user/documents -o output.json\n";
     std::cout << "  " << programName << " /home/user/file.txt -b 8 -t Ext4\n";
+    #endif
 }
 
 int main(int argc, char* argv[]) {
@@ -96,10 +104,21 @@ int main(int argc, char* argv[]) {
         std::cout << "正在扫描文件系统: " << inputPath << "\n";
         std::cout << "块大小: " << blockSizeKB << " KB\n";
         std::cout << "文件系统类型: " << fileSystemType << "\n";
-        std::cout << "输出文件: " << outputPath << "\n\n";
+        std::cout << "输出文件: " << outputPath << "\n";
+        std::cout << "使用多线程加速 (线程数: " << std::thread::hardware_concurrency() << ")\n\n";
 
+        // 创建进度条
+        ProgressBar progressBar("扫描进度");
+        progressBar.showSpinner();  // 初始显示旋转指示器
+        
         // 创建扫描器
         FileSystemScanner scanner(blockSizeKB * 1024, fileSystemType);
+        
+        // 设置进度回调
+        scanner.setProgressCallback([&progressBar](size_t files, size_t dirs, size_t totalSize) {
+            // 使用旋转指示器，因为我们不知道总数
+            progressBar.setCurrent(files + dirs);
+        });
         
         // 扫描文件系统
         if (fs::is_directory(inputPath)) {
@@ -110,10 +129,16 @@ int main(int argc, char* argv[]) {
             std::cerr << "错误: 不支持的路径类型: " << inputPath << "\n";
             return 1;
         }
+        
+        // 完成扫描进度条
+        progressBar.finish();
 
         // 生成JSON
-        std::cout << "正在生成JSON文件...\n";
+        ProgressBar jsonProgressBar("生成JSON");
+        jsonProgressBar.update(0.0);
         scanner.generateJSON(outputPath);
+        jsonProgressBar.update(1.0);
+        jsonProgressBar.finish();
 
         std::cout << "\n✓ 成功生成文件系统JSON: " << outputPath << "\n";
         std::cout << "  总文件数: " << scanner.getFileCount() << "\n";
@@ -122,7 +147,7 @@ int main(int argc, char* argv[]) {
         std::cout << "  总块数: " << scanner.getTotalBlocks() << "\n";
 
     } catch (const std::exception& e) {
-        std::cerr << "错误: " << e.what() << "\n";
+        std::cerr << "\n错误: " << e.what() << "\n";
         return 1;
     }
 

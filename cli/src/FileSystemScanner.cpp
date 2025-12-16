@@ -7,6 +7,7 @@
 #include <random>
 #include <algorithm>
 #include <ctime>
+#include <thread>
 
 FileSystemScanner::FileSystemScanner(size_t blockSize, const std::string& fileSystemType)
     : blockSize_(blockSize)
@@ -18,7 +19,16 @@ FileSystemScanner::FileSystemScanner(size_t blockSize, const std::string& fileSy
     , nextFileId_(1)
     , nextDirectoryId_(1)
     , nextBlockIndex_(0)
+    , stopWorkers_(false)
+    , numThreads_(std::max(1u, std::thread::hardware_concurrency()))  // 使用CPU核心数
+    , progressCallback_(nullptr)
 {
+}
+
+void FileSystemScanner::notifyProgress() {
+    if (progressCallback_) {
+        progressCallback_(fileCount_.load(), directoryCount_.load(), totalSize_.load());
+    }
 }
 
 void FileSystemScanner::scanDirectory(const std::string& path) {
@@ -29,7 +39,15 @@ void FileSystemScanner::scanDirectory(const std::string& path) {
     rootDir.id = "root";
     rootDir.name = rootPath.filename().string();
     if (rootDir.name.empty()) {
+        // Windows和Linux路径处理
+        #ifdef _WIN32
+        rootDir.name = rootPath.root_name().string() + rootPath.root_directory().string();
+        if (rootDir.name.empty()) {
+            rootDir.name = "\\";
+        }
+        #else
         rootDir.name = "/";
+        #endif
     }
     rootDir.type = "directory";
     rootDir.size = 0;
@@ -38,9 +56,10 @@ void FileSystemScanner::scanDirectory(const std::string& path) {
     rootDir.allocationAlgorithm = "";
     files_.push_back(rootDir);
     directoryCount_++;
+    notifyProgress();
     
-    // 递归扫描目录
-    scanDirectoryRecursive(rootPath, "root");
+    // 使用多线程并行扫描目录
+    scanDirectoryRecursiveParallel(rootPath, "root");
 }
 
 void FileSystemScanner::scanFile(const std::string& path) {
@@ -49,7 +68,11 @@ void FileSystemScanner::scanFile(const std::string& path) {
     // 创建根目录条目
     FileEntry rootDir;
     rootDir.id = "root";
+    #ifdef _WIN32
+    rootDir.name = "\\";
+    #else
     rootDir.name = "/";
+    #endif
     rootDir.type = "directory";
     rootDir.size = 0;
     rootDir.parentId = "";
@@ -57,6 +80,7 @@ void FileSystemScanner::scanFile(const std::string& path) {
     rootDir.allocationAlgorithm = "";
     files_.push_back(rootDir);
     directoryCount_++;
+    notifyProgress();
     
     // 添加文件条目
     FileEntry file;
@@ -85,6 +109,7 @@ void FileSystemScanner::scanFile(const std::string& path) {
     files_.push_back(file);
     fileCount_++;
     totalSize_ += file.size;
+    notifyProgress();
 }
 
 void FileSystemScanner::scanDirectoryRecursive(const fs::path& path, const std::string& parentId) {
@@ -183,7 +208,8 @@ std::vector<int> FileSystemScanner::allocateBlocks(size_t fileSize, const std::s
 }
 
 double FileSystemScanner::calculateFragmentRate() const {
-    if (totalBlocks_ == 0) {
+    size_t currentTotalBlocks = totalBlocks_.load();
+    if (currentTotalBlocks == 0) {
         return 0.0;
     }
     
@@ -191,6 +217,8 @@ double FileSystemScanner::calculateFragmentRate() const {
     int fragmentedBlocks = 0;
     std::vector<int> sortedBlocks;
     
+    // 需要加锁读取 files_，因为可能正在被其他线程修改
+    std::lock_guard<std::mutex> lock(filesMutex_);
     for (const auto& file : files_) {
         if (file.type == "file" && !file.blocks.empty()) {
             sortedBlocks.insert(sortedBlocks.end(), file.blocks.begin(), file.blocks.end());
@@ -209,7 +237,7 @@ double FileSystemScanner::calculateFragmentRate() const {
         }
     }
     
-    return (fragmentedBlocks * 100.0) / totalBlocks_;
+    return (fragmentedBlocks * 100.0) / currentTotalBlocks;
 }
 
 std::string FileSystemScanner::generateFileId() {
@@ -224,6 +252,198 @@ std::string FileSystemScanner::generateDirectoryId() {
     oss << "dir-" << nextDirectoryId_;
     nextDirectoryId_++;
     return oss.str();
+}
+
+// 线程安全的ID生成
+std::string FileSystemScanner::generateFileIdThreadSafe() {
+    int id = nextFileId_.fetch_add(1);
+    std::ostringstream oss;
+    oss << "file-" << id;
+    return oss.str();
+}
+
+std::string FileSystemScanner::generateDirectoryIdThreadSafe() {
+    int id = nextDirectoryId_.fetch_add(1);
+    std::ostringstream oss;
+    oss << "dir-" << id;
+    return oss.str();
+}
+
+// 线程安全的块分配
+std::vector<int> FileSystemScanner::allocateBlocksThreadSafe(size_t fileSize, const std::string& algorithm) {
+    size_t requiredBlocks = (fileSize + blockSize_ - 1) / blockSize_;
+    std::vector<int> blocks;
+    
+    if (requiredBlocks == 0) {
+        return blocks;
+    }
+    
+    std::lock_guard<std::mutex> lock(blocksMutex_);
+    
+    if (algorithm == "continuous") {
+        // 连续分配：从nextBlockIndex_开始分配连续块
+        int startIndex = nextBlockIndex_.load();
+        for (size_t i = 0; i < requiredBlocks; i++) {
+            int blockNum = startIndex + static_cast<int>(i);
+            blocks.push_back(blockNum);
+            usedBlocks_[blockNum] = "";  // 文件ID稍后设置
+        }
+        nextBlockIndex_ = startIndex + static_cast<int>(requiredBlocks);
+        totalBlocks_ += requiredBlocks;
+    } else {
+        // 默认使用连续分配
+        int startIndex = nextBlockIndex_.load();
+        for (size_t i = 0; i < requiredBlocks; i++) {
+            int blockNum = startIndex + static_cast<int>(i);
+            blocks.push_back(blockNum);
+            usedBlocks_[blockNum] = "";
+        }
+        nextBlockIndex_ = startIndex + static_cast<int>(requiredBlocks);
+        totalBlocks_ += requiredBlocks;
+    }
+    
+    return blocks;
+}
+
+// 处理单个目录条目（线程安全）
+void FileSystemScanner::processDirectoryEntry(const fs::path& entryPath, const std::string& parentId) {
+    try {
+        if (fs::is_directory(entryPath)) {
+            // 创建目录条目
+            FileEntry dir;
+            dir.id = generateDirectoryIdThreadSafe();
+            dir.name = entryPath.filename().string();
+            dir.type = "directory";
+            dir.size = 0;
+            dir.parentId = parentId;
+            dir.createTime = getFileTime(entryPath);
+            dir.allocationAlgorithm = "";
+            dir.blocks = {};
+            
+            {
+                std::lock_guard<std::mutex> lock(filesMutex_);
+                files_.push_back(dir);
+            }
+            directoryCount_++;
+            notifyProgress();
+            
+            // 将子目录添加到工作队列
+            {
+                std::lock_guard<std::mutex> lock(queueMutex_);
+                workQueue_.push({entryPath, dir.id});
+            }
+            queueCondition_.notify_one();
+            
+        } else if (fs::is_regular_file(entryPath)) {
+            // 创建文件条目
+            FileEntry file;
+            file.id = generateFileIdThreadSafe();
+            file.name = entryPath.filename().string();
+            file.type = "file";
+            
+            try {
+                file.size = fs::file_size(entryPath);
+                file.createTime = getFileTime(entryPath);
+            } catch (const std::exception& e) {
+                std::cerr << "警告: 无法获取文件大小 " << entryPath << ": " << e.what() << "\n";
+                file.size = 0;
+                file.createTime = formatTime(fs::file_time_type::clock::now());
+            }
+            
+            file.parentId = parentId;
+            file.blocks = allocateBlocksThreadSafe(file.size);
+            file.allocationAlgorithm = "continuous";
+            
+            {
+                std::lock_guard<std::mutex> lock(filesMutex_);
+                files_.push_back(file);
+            }
+            fileCount_++;
+            totalSize_ += file.size;
+            notifyProgress();
+        }
+    } catch (const std::exception& e) {
+        std::cerr << "警告: 跳过条目 " << entryPath << ": " << e.what() << "\n";
+    }
+}
+
+// 工作线程函数
+void FileSystemScanner::workerThread() {
+    while (true) {
+        std::unique_lock<std::mutex> lock(queueMutex_);
+        
+        // 等待工作或停止信号
+        queueCondition_.wait(lock, [this] {
+            return !workQueue_.empty() || stopWorkers_;
+        });
+        
+        // 如果停止标志被设置且队列为空，退出
+        if (stopWorkers_ && workQueue_.empty()) {
+            break;
+        }
+        
+        // 获取工作项
+        if (!workQueue_.empty()) {
+            auto work = workQueue_.front();
+            workQueue_.pop();
+            lock.unlock();
+            
+            // 处理目录
+            try {
+                for (const auto& entry : fs::directory_iterator(work.first)) {
+                    processDirectoryEntry(entry.path(), work.second);
+                }
+            } catch (const std::exception& e) {
+                std::cerr << "警告: 无法扫描目录 " << work.first << ": " << e.what() << "\n";
+            }
+        }
+    }
+}
+
+// 多线程并行扫描目录
+void FileSystemScanner::scanDirectoryRecursiveParallel(const fs::path& path, const std::string& parentId) {
+    // 启动工作线程
+    stopWorkers_ = false;
+    workerThreads_.clear();
+    for (size_t i = 0; i < numThreads_; i++) {
+        workerThreads_.emplace_back(&FileSystemScanner::workerThread, this);
+    }
+    
+    // 处理根目录的条目，并将子目录添加到工作队列
+    try {
+        for (const auto& entry : fs::directory_iterator(path)) {
+            processDirectoryEntry(entry.path(), parentId);
+        }
+    } catch (const std::exception& e) {
+        std::cerr << "警告: 无法扫描目录 " << path << ": " << e.what() << "\n";
+    }
+    
+    // 等待所有工作完成
+    while (true) {
+        std::unique_lock<std::mutex> lock(queueMutex_);
+        if (workQueue_.empty()) {
+            // 等待一小段时间确保没有新工作
+            lock.unlock();
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            lock.lock();
+            if (workQueue_.empty()) {
+                break;
+            }
+        }
+        lock.unlock();
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    
+    // 停止工作线程
+    stopWorkers_ = true;
+    queueCondition_.notify_all();
+    
+    // 等待所有线程完成
+    for (auto& thread : workerThreads_) {
+        if (thread.joinable()) {
+            thread.join();
+        }
+    }
 }
 
 std::string FileSystemScanner::formatTime(const fs::file_time_type& time) {
@@ -267,17 +487,21 @@ void FileSystemScanner::generateJSON(const std::string& outputPath) {
     json["fileSystemType"] = fileSystemType_;
     
     // 计算总块数（至少为已使用的块数，可以设置一个合理的上限）
-    size_t calculatedTotalBlocks = std::max(totalBlocks_, size_t(1000));
-    if (totalBlocks_ > 0) {
+    size_t currentTotalBlocks = totalBlocks_.load();
+    size_t calculatedTotalBlocks = std::max(currentTotalBlocks, size_t(1000));
+    if (currentTotalBlocks > 0) {
         // 添加一些空闲块
-        calculatedTotalBlocks = totalBlocks_ + (totalBlocks_ / 10);  // 增加10%的空闲块
+        calculatedTotalBlocks = currentTotalBlocks + (currentTotalBlocks / 10);  // 增加10%的空闲块
     }
     
-    // 生成空闲块列表
+    // 生成空闲块列表（需要加锁保护）
     std::vector<int> freeBlocksList;
-    for (int i = 0; i < static_cast<int>(calculatedTotalBlocks); i++) {
-        if (usedBlocks_.find(i) == usedBlocks_.end()) {
-            freeBlocksList.push_back(i);
+    {
+        std::lock_guard<std::mutex> lock(blocksMutex_);
+        for (int i = 0; i < static_cast<int>(calculatedTotalBlocks); i++) {
+            if (usedBlocks_.find(i) == usedBlocks_.end()) {
+                freeBlocksList.push_back(i);
+            }
         }
     }
     
@@ -290,25 +514,28 @@ void FileSystemScanner::generateJSON(const std::string& outputPath) {
     disk["freeBlocks"] = freeBlocksList;
     disk["usedBlocks"] = nlohmann::json::object();  // 空对象，因为usedBlocks在JSON中不需要
     
-    // 构建文件数组
+    // 构建文件数组（需要加锁保护）
     nlohmann::json filesArray = nlohmann::json::array();
-    for (const auto& file : files_) {
-        nlohmann::json fileJson;
-        fileJson["id"] = file.id;
-        fileJson["name"] = file.name;
-        fileJson["type"] = file.type;
-        fileJson["size"] = static_cast<int>(file.size);
-        fileJson["blocks"] = file.blocks;
-        fileJson["parentId"] = file.parentId;
-        fileJson["createTime"] = file.createTime;
-        
-        if (file.type == "file" && !file.allocationAlgorithm.empty()) {
-            fileJson["allocationAlgorithm"] = file.allocationAlgorithm;
-        } else {
-            fileJson["allocationAlgorithm"] = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(filesMutex_);
+        for (const auto& file : files_) {
+            nlohmann::json fileJson;
+            fileJson["id"] = file.id;
+            fileJson["name"] = file.name;
+            fileJson["type"] = file.type;
+            fileJson["size"] = static_cast<int>(file.size);
+            fileJson["blocks"] = file.blocks;
+            fileJson["parentId"] = file.parentId;
+            fileJson["createTime"] = file.createTime;
+            
+            if (file.type == "file" && !file.allocationAlgorithm.empty()) {
+                fileJson["allocationAlgorithm"] = file.allocationAlgorithm;
+            } else {
+                fileJson["allocationAlgorithm"] = nullptr;
+            }
+            
+            filesArray.push_back(fileJson);
         }
-        
-        filesArray.push_back(fileJson);
     }
     
     disk["files"] = filesArray;
