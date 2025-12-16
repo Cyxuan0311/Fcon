@@ -1,26 +1,134 @@
 <template>
-  <div ref="containerRef" class="w-full h-full bg-gray-900"></div>
+  <div class="w-full h-full relative bg-gray-900">
+    <!-- 状态面板 - 显示当前选中的文件/文件夹信息 -->
+    <div class="status-panel">
+      <div class="status-panel-content">
+        <div class="status-item">
+          <span class="status-label">当前选中：</span>
+          <span v-if="currentSelectedFile" class="status-value">
+            <span :class="['file-type-badge', currentSelectedFile.type === 'file' ? 'file-badge' : 'dir-badge']">
+              {{ currentSelectedFile.type === 'file' ? '文件' : '文件夹' }}
+            </span>
+            <span class="file-name">{{ currentSelectedFile.name }}</span>
+            <span v-if="currentSelectedFile.type === 'file'" class="file-size">
+              ({{ formatFileSize(currentSelectedFile.size) }})
+            </span>
+            <span v-if="currentSelectedFile.blocks && currentSelectedFile.blocks.length > 0" class="file-blocks">
+              - 占用 {{ currentSelectedFile.blocks.length }} 个块
+            </span>
+          </span>
+          <span v-else class="status-value empty">未选中</span>
+        </div>
+        <div v-if="hoveredFile" class="status-item hover-info">
+          <span class="status-label">鼠标悬停：</span>
+          <span class="status-value">
+            <span :class="['file-type-badge', hoveredFile.type === 'file' ? 'file-badge' : 'dir-badge']">
+              {{ hoveredFile.type === 'file' ? '文件' : '文件夹' }}
+            </span>
+            <span class="file-name">{{ hoveredFile.name }}</span>
+          </span>
+        </div>
+      </div>
+    </div>
+    
+    <!-- 3D可视化容器 -->
+    <div ref="containerRef" class="w-full h-full"></div>
+    
+    <!-- 侧边栏目录树 - 毛玻璃效果 -->
+    <div class="directory-tree-panel">
+      <div class="directory-tree-header">
+        <h3 class="directory-tree-title">
+          <FolderOutlined class="text-blue-500" />
+          文件目录
+        </h3>
+      </div>
+      <div class="directory-tree-content">
+        <SimpleDirectoryTree 
+          @select="handleFileSelect"
+          :selected-id="fileSystemStore.selectedItem?.id"
+        />
+      </div>
+    </div>
+  </div>
 </template>
 
 <script setup>
 import { ref, onMounted, onUnmounted, watch } from 'vue'
+import { FolderOutlined } from '@ant-design/icons-vue'
 import { useFileSystemStore } from '@/stores/fileSystem'
 import { ThreeDRenderer } from '@/renderer/ThreeDRenderer'
 import { clearFileColors } from '@/utils/colorGenerator'
+import SimpleDirectoryTree from './SimpleDirectoryTree.vue'
 
 const containerRef = ref(null)
 const fileSystemStore = useFileSystemStore()
 let renderer = null
+let currentlyHighlightedFileId = null // 跟踪当前高亮的文件ID
+
+// 状态面板相关
+const currentSelectedFile = ref(null)
+const hoveredFile = ref(null)
+
+// 格式化文件大小
+const formatFileSize = (bytes) => {
+  if (!bytes || bytes === 0) return '0 B'
+  const k = 1024
+  const sizes = ['B', 'KB', 'MB', 'GB']
+  const i = Math.floor(Math.log(bytes) / Math.log(k))
+  return Math.round(bytes / Math.pow(k, i) * 100) / 100 + ' ' + sizes[i]
+}
+
+// 处理文件选择（从目录树选择时触发）
+const handleFileSelect = (file) => {
+  if (!file) return
+  
+  // 实现切换行为：如果点击的是已选中的项，收起；否则弹出
+  if (fileSystemStore.selectedItem?.id === file.id && currentlyHighlightedFileId === file.id) {
+    // 点击已选中的项，收起
+    fileSystemStore.selectedItem = null
+    currentlyHighlightedFileId = null
+    if (renderer) {
+      renderer.resetAllBlocks()
+    }
+  } else {
+    // 点击新的项，弹出
+  fileSystemStore.selectedItem = file
+    currentlyHighlightedFileId = file.id
+    
+  if (renderer && file) {
+      // 确保磁盘块已创建后再触发弹出效果
+      if (renderer.diskBlocks && renderer.diskBlocks.length > 0) {
+        // 只有从目录树选择时才触发磁盘块弹出效果
+        renderer.highlightFileBlocks(file)
+      } else {
+        // 如果磁盘块还没创建，快速重试（减少延迟时间）
+        setTimeout(() => {
+          if (renderer && renderer.diskBlocks && renderer.diskBlocks.length > 0 && fileSystemStore.selectedItem?.id === file.id) {
+    renderer.highlightFileBlocks(file)
+          }
+        }, 50) // 从100ms减少到50ms
+      }
+    }
+  }
+}
 
 onMounted(() => {
   if (containerRef.value) {
     renderer = new ThreeDRenderer(containerRef.value)
     renderer.init()
     
-    // 设置选中回调
+    // 设置选中回调（从3D场景点击时，只更新选中项，不触发弹出效果）
     renderer.setOnSelectCallback((file) => {
       fileSystemStore.selectedItem = file
+      // 注意：这里不调用 highlightFileBlocks，弹出效果只在目录树选择时触发
     })
+    
+    // 设置悬停回调（鼠标悬停在磁盘块上时）
+    if (renderer.setOnHoverCallback) {
+      renderer.setOnHoverCallback((file) => {
+        hoveredFile.value = file
+      })
+    }
     
     // 初始化磁盘可视化
     if (fileSystemStore.disk.totalBlocks > 0) {
@@ -45,24 +153,75 @@ watch(
   () => fileSystemStore.disk,
   (newDisk, oldDisk) => {
     if (renderer && newDisk.totalBlocks > 0) {
-      // 如果磁盘刚初始化，或者总块数发生变化，重新创建磁盘
+      // 判断是否需要重新创建磁盘
+      // 1. 如果磁盘块还没有创建
+      // 2. 如果旧磁盘总块数为0（首次初始化）
+      // 3. 如果总块数发生变化
+      // 4. 如果块大小发生变化（重新配置参数）
+      // 5. 如果文件列表为空（重新初始化磁盘）
       const shouldRecreate = 
         renderer.diskBlocks.length === 0 || 
-        oldDisk.totalBlocks === 0 ||
-        oldDisk.totalBlocks !== newDisk.totalBlocks
+        !oldDisk || oldDisk.totalBlocks === 0 ||
+        oldDisk.totalBlocks !== newDisk.totalBlocks ||
+        oldDisk.blockSize !== newDisk.blockSize ||
+        (newDisk.files && newDisk.files.length === 0 && oldDisk.files && oldDisk.files.length > 0)
       
       if (shouldRecreate) {
+        // 重新配置磁盘：先置灰所有块，然后重新创建
+        if (renderer.grayAllBlocks) {
+          renderer.grayAllBlocks()
+        }
+        
         clearFileColors() // 清除所有文件颜色映射
         renderer.createDisk(newDisk)
         // 调整相机位置以适应新的磁盘大小
         renderer.adjustCameraForDisk(newDisk)
+        // 应用当前目录的过滤
+        renderer.filterBlocksByDirectory(fileSystemStore.currentDirectory, false)
+        // 初始化后不应该有选中的项，因为文件列表为空
       } else {
-        renderer.updateDiskBlocks(newDisk, true) // 使用动画
+        // 碎片整理或其他更新操作：先置灰所有块，然后更新
+        if (renderer.grayAllBlocks) {
+          renderer.grayAllBlocks()
+        }
+        
+        // 等待置灰完成后再更新块的颜色
+        setTimeout(() => {
+          if (renderer) {
+            renderer.updateDiskBlocks(newDisk, true) // 使用动画更新块的颜色
+            
+            // 等待块状态更新完成后再应用过滤和高亮
+            setTimeout(() => {
+              if (renderer) {
+                // 应用当前目录的过滤
+                renderer.filterBlocksByDirectory(fileSystemStore.currentDirectory, true)
+                // 如果已有选中的项，触发弹出效果
+                if (fileSystemStore.selectedItem) {
+                  setTimeout(() => {
+                    if (renderer && fileSystemStore.selectedItem) {
+                      renderer.highlightFileBlocks(fileSystemStore.selectedItem)
+                    }
+                  }, 50)
+                }
+              }
+            }, 150) // 等待颜色更新完成
+          }
+        }, 100) // 等待置灰完成
       }
     } else if (renderer && newDisk.totalBlocks === 0) {
       // 如果总块数为0，清除所有磁盘块
-      renderer.diskBlocks.forEach(block => renderer.scene.remove(block))
+      if (renderer.resetAllBlocks) {
+        renderer.resetAllBlocks()
+      }
+      renderer.diskBlocks.forEach(block => {
+        if (block && block.parent) {
+          renderer.scene.remove(block)
+        }
+      })
       renderer.diskBlocks = []
+      if (renderer.highlightedBlocks) {
+        renderer.highlightedBlocks.clear()
+      }
     }
   },
   { deep: true, immediate: true }
@@ -71,32 +230,230 @@ watch(
 // 监听文件列表变化，更新目录树
 watch(
   () => fileSystemStore.files,
-  (newFiles) => {
+  (newFiles, oldFiles) => {
     if (renderer) {
       renderer.createDirectoryTree(newFiles)
+      
+      // 如果文件数量减少（可能是删除了文件），需要置灰对应的块
+      if (oldFiles && oldFiles.length > newFiles.length) {
+        // 找出被删除的文件
+        const deletedFiles = oldFiles.filter(oldFile => 
+          !newFiles.find(newFile => newFile.id === oldFile.id)
+        )
+        
+        // 将被删除的文件对应的块置灰
+        deletedFiles.forEach(deletedFile => {
+          if (renderer.grayFileBlocks) {
+            renderer.grayFileBlocks(deletedFile)
+          }
+        })
+        
+        // 等待磁盘状态更新后，再更新所有块的颜色，确保删除的块和空闲块颜色完全一致
+        setTimeout(() => {
+          if (renderer && fileSystemStore.disk) {
+            // 直接更新块的颜色，使用 getBlockColor 确保颜色一致
+            renderer.diskBlocks.forEach((block, index) => {
+              if (block && block.material && index < fileSystemStore.disk.totalBlocks) {
+                const targetColor = renderer.getBlockColor(fileSystemStore.disk, index)
+                block.material.color.setHex(targetColor)
+                // 更新块的文件信息
+                const file = fileSystemStore.disk.usedBlocks && fileSystemStore.disk.usedBlocks[index]
+                block.userData.file = file || null
+              }
+            })
+            // 应用当前目录的过滤
+            renderer.filterBlocksByDirectory(fileSystemStore.currentDirectory, false)
+          }
+        }, 100) // 等待磁盘状态完全更新
+      }
     }
   },
   { deep: true }
 )
 
-// 监听当前目录变化，只显示当前目录及其子目录的文件块
+// 监听选中项变化，只在取消选择时重置块（不触发弹出效果）
+// 弹出效果只在目录树选择时通过 handleFileSelect 触发
+watch(
+  () => fileSystemStore.selectedItem,
+  (newItem, oldItem) => {
+    // 更新状态面板显示的选中文件
+    currentSelectedFile.value = newItem
+    
+    // 如果选中项被清除（从有值变为null），重置所有块
+    if (renderer && !newItem && oldItem) {
+      renderer.resetAllBlocks()
+      currentlyHighlightedFileId = null
+    } else if (!newItem) {
+      currentlyHighlightedFileId = null
+    }
+    // 注意：不在这里触发 highlightFileBlocks，弹出效果只在目录树选择时触发
+  },
+  { immediate: true }
+)
+
+// 监听当前目录变化，更新磁盘块显示（只显示当前目录下的文件块）
 watch(
   () => fileSystemStore.currentDirectory,
-  (newDir) => {
-    if (renderer && fileSystemStore.disk.totalBlocks > 0) {
-      // 如果是根目录，显示所有块
-      if (newDir === 'root') {
-        renderer.showAllBlocks(fileSystemStore.disk)
-      } else {
-        // 递归获取当前目录及其所有子目录下的所有文件
-        const allFiles = fileSystemStore.getAllFilesInDirectory(newDir)
-        
-        // 更新磁盘可视化，只显示当前目录的文件块
-        renderer.showDirectoryFilesOnly(allFiles, fileSystemStore.disk)
-      }
+  (newDir, oldDir) => {
+    if (renderer && newDir !== undefined) {
+      // 根据当前目录过滤显示磁盘块
+      renderer.filterBlocksByDirectory(newDir, true)
     }
   },
   { immediate: true }
 )
 </script>
+
+<style scoped>
+/* 状态面板样式 */
+.status-panel {
+  position: absolute;
+  top: 1rem;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 100;
+  min-width: 400px;
+  max-width: 800px;
+}
+
+.status-panel-content {
+  /* 毛玻璃效果 */
+  background: rgba(255, 255, 255, 0.15);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 12px;
+  box-shadow: 0 8px 32px 0 rgba(31, 38, 135, 0.37);
+  padding: 0.75rem 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.status-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.875rem;
+}
+
+.status-item.hover-info {
+  opacity: 0.8;
+  font-size: 0.8125rem;
+}
+
+.status-label {
+  color: rgba(255, 255, 255, 0.7);
+  font-weight: 500;
+}
+
+.status-value {
+  color: rgba(255, 255, 255, 0.9);
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.status-value.empty {
+  color: rgba(255, 255, 255, 0.5);
+  font-style: italic;
+}
+
+.file-type-badge {
+  display: inline-block;
+  padding: 0.125rem 0.5rem;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.file-badge {
+  background: rgba(59, 130, 246, 0.3);
+  color: rgba(147, 197, 253, 1);
+  border: 1px solid rgba(59, 130, 246, 0.5);
+}
+
+.dir-badge {
+  background: rgba(16, 185, 129, 0.3);
+  color: rgba(110, 231, 183, 1);
+  border: 1px solid rgba(16, 185, 129, 0.5);
+}
+
+.file-name {
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.95);
+}
+
+.file-size {
+  color: rgba(255, 255, 255, 0.7);
+  font-size: 0.8125rem;
+}
+
+.file-blocks {
+  color: rgba(255, 255, 255, 0.6);
+  font-size: 0.8125rem;
+}
+
+.directory-tree-panel {
+  position: absolute;
+  top: 1rem;
+  left: 1rem;
+  width: 12rem;
+  max-height: calc(100% - 2rem);
+  display: flex;
+  flex-direction: column;
+  
+  /* 毛玻璃效果 */
+  background: rgba(255, 255, 255, 0.15);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 12px;
+  box-shadow: 0 8px 32px 0 rgba(31, 38, 135, 0.37);
+  overflow: hidden;
+}
+
+.directory-tree-header {
+  padding: 0.75rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.directory-tree-title {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.9);
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0;
+}
+
+.directory-tree-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0.5rem;
+}
+
+/* 滚动条样式 */
+.directory-tree-content::-webkit-scrollbar {
+  width: 6px;
+}
+
+.directory-tree-content::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 3px;
+}
+
+.directory-tree-content::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.3);
+  border-radius: 3px;
+}
+
+.directory-tree-content::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.5);
+}
+</style>
 
