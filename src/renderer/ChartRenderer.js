@@ -66,22 +66,23 @@ export class ChartRenderer {
       return
     }
     
-    // 为不同操作类型分配不同颜色
+    // B端专业配色方案
     const colorMap = {
-      '创建文件': ['#48bb78', '#2f855a'],
-      '删除文件': ['#f56565', '#c53030'],
-      '碎片整理': ['#9f7aea', '#6b46c1']
+      '创建文件': '#1890ff',
+      '删除文件': '#ff4d4f',
+      '碎片整理': '#faad14'
     }
     
     const option = {
       backgroundColor: 'transparent',
       title: {
         text: '操作耗时对比',
-        left: 'center',
+        left: 'left',
+        top: 0,
         textStyle: {
-          color: '#ffffff',
-          fontSize: 16,
-          fontWeight: 'bold'
+          color: '#262626',
+          fontSize: 14,
+          fontWeight: 600
         }
       },
       tooltip: {
@@ -89,55 +90,67 @@ export class ChartRenderer {
         axisPointer: {
           type: 'shadow'
         },
-        backgroundColor: 'rgba(0, 0, 0, 0.8)',
-        borderColor: '#48bb78',
+        backgroundColor: '#fff',
+        borderColor: '#d9d9d9',
         borderWidth: 1,
         textStyle: {
-          color: '#ffffff'
+          color: '#262626',
+          fontSize: 12
         },
         formatter: (params) => {
           const param = params[0]
-          return `${param.name}<br/>${param.seriesName}: ${param.value} ms`
+          return `<div style="padding: 4px 0;">
+            <div style="font-weight: 600; margin-bottom: 4px;">${param.name}</div>
+            <div>${param.seriesName}: <span style="color: #1890ff; font-weight: 600;">${param.value} ms</span></div>
+          </div>`
         }
       },
       grid: {
-        left: '10%',
-        right: '10%',
-        bottom: '15%',
-        top: '20%',
+        left: '3%',
+        right: '4%',
+        bottom: '10%',
+        top: '15%',
         containLabel: true
       },
       xAxis: {
         type: 'category',
         data: data.map(item => item.operation),
         axisLabel: {
-          color: '#ffffff',
+          color: '#595959',
+          fontSize: 12,
           rotate: 0
         },
         axisLine: {
           lineStyle: {
-            color: '#718096'
+            color: '#d9d9d9'
+          }
+        },
+        axisTick: {
+          lineStyle: {
+            color: '#d9d9d9'
           }
         }
       },
       yAxis: {
         type: 'value',
-        name: '耗时(ms)',
+        name: '耗时 (ms)',
         nameTextStyle: {
-          color: '#ffffff'
+          color: '#8c8c8c',
+          fontSize: 12
         },
         axisLabel: {
-          color: '#ffffff'
+          color: '#595959',
+          fontSize: 12
         },
         axisLine: {
           lineStyle: {
-            color: '#718096'
+            color: '#d9d9d9'
           }
         },
         splitLine: {
           lineStyle: {
-            color: '#4a5568',
-            type: 'dashed'
+            color: '#f0f0f0',
+            type: 'solid'
           }
         }
       },
@@ -146,22 +159,21 @@ export class ChartRenderer {
         data: data.map(item => ({
           value: item.duration,
           itemStyle: {
-            color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
-              { offset: 0, color: colorMap[item.operation]?.[0] || '#4299e1' },
-              { offset: 1, color: colorMap[item.operation]?.[1] || '#2c5282' }
-            ])
+            color: colorMap[item.operation] || '#1890ff'
           }
         })),
         type: 'bar',
-        barWidth: '60%',
+        barWidth: '50%',
+        barMaxWidth: 60,
         label: {
           show: true,
           position: 'top',
-          color: '#ffffff',
+          color: '#595959',
+          fontSize: 11,
           formatter: '{c} ms'
         },
         animation: true,
-        animationDuration: 1000,
+        animationDuration: 600,
         animationEasing: 'cubicOut'
       }]
     }
@@ -190,31 +202,36 @@ export class ChartRenderer {
       backgroundColor: 'transparent',
       title: {
         text: 'IO吞吐量变化趋势',
-        left: 'center',
+        left: 'left',
+        top: 0,
         textStyle: {
-          color: '#ffffff',
-          fontSize: 16,
-          fontWeight: 'bold'
+          color: '#262626',
+          fontSize: 14,
+          fontWeight: 600
         }
       },
       tooltip: {
         trigger: 'axis',
-        backgroundColor: 'rgba(0, 0, 0, 0.8)',
-        borderColor: '#4299e1',
+        backgroundColor: '#fff',
+        borderColor: '#d9d9d9',
         borderWidth: 1,
         textStyle: {
-          color: '#ffffff'
+          color: '#262626',
+          fontSize: 12
         },
         formatter: (params) => {
           const param = params[0]
-          return `${param.name}<br/>吞吐量: ${param.value} KB/s`
+          return `<div style="padding: 4px 0;">
+            <div style="font-weight: 600; margin-bottom: 4px;">${param.name}</div>
+            <div>吞吐量: <span style="color: #1890ff; font-weight: 600;">${param.value} KB/s</span></div>
+          </div>`
         }
       },
       grid: {
-        left: '10%',
-        right: '10%',
-        bottom: '15%',
-        top: '20%',
+        left: '3%',
+        right: '4%',
+        bottom: '10%',
+        top: '15%',
         containLabel: true
       },
       xAxis: {
@@ -222,33 +239,41 @@ export class ChartRenderer {
         data: data.map(item => formatTime(item.timestamp)),
         boundaryGap: false,
         axisLabel: {
-          color: '#ffffff',
+          color: '#595959',
+          fontSize: 11,
           rotate: 45
         },
         axisLine: {
           lineStyle: {
-            color: '#718096'
+            color: '#d9d9d9'
+          }
+        },
+        axisTick: {
+          lineStyle: {
+            color: '#d9d9d9'
           }
         }
       },
       yAxis: {
         type: 'value',
-        name: '吞吐量(KB/s)',
+        name: '吞吐量 (KB/s)',
         nameTextStyle: {
-          color: '#ffffff'
+          color: '#8c8c8c',
+          fontSize: 12
         },
         axisLabel: {
-          color: '#ffffff'
+          color: '#595959',
+          fontSize: 12
         },
         axisLine: {
           lineStyle: {
-            color: '#718096'
+            color: '#d9d9d9'
           }
         },
         splitLine: {
           lineStyle: {
-            color: '#4a5568',
-            type: 'dashed'
+            color: '#f0f0f0',
+            type: 'solid'
           }
         }
       },
@@ -258,22 +283,24 @@ export class ChartRenderer {
         type: 'line',
         smooth: true,
         symbol: 'circle',
-        symbolSize: 6,
+        symbolSize: 4,
         lineStyle: {
-          color: '#4299e1',
+          color: '#1890ff',
           width: 2
         },
         itemStyle: {
-          color: '#4299e1'
+          color: '#1890ff',
+          borderColor: '#fff',
+          borderWidth: 1
         },
         areaStyle: {
           color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
-            { offset: 0, color: 'rgba(66, 153, 225, 0.3)' },
-            { offset: 1, color: 'rgba(66, 153, 225, 0.1)' }
+            { offset: 0, color: 'rgba(24, 144, 255, 0.2)' },
+            { offset: 1, color: 'rgba(24, 144, 255, 0.05)' }
           ])
         },
         animation: true,
-        animationDuration: 1000,
+        animationDuration: 600,
         animationEasing: 'cubicOut'
       }]
     }
@@ -310,31 +337,31 @@ export class ChartRenderer {
       backgroundColor: 'transparent',
       title: {
         text: '磁盘空间占比',
-        left: 'center',
-        top: '5%',
+        left: 'left',
+        top: 0,
         textStyle: {
-          color: '#ffffff',
-          fontSize: 16,
-          fontWeight: 'bold'
+          color: '#262626',
+          fontSize: 14,
+          fontWeight: 600
         }
       },
       tooltip: {
         trigger: 'item',
-        backgroundColor: 'rgba(0, 0, 0, 0.8)',
-        borderColor: '#9f7aea',
+        backgroundColor: '#fff',
+        borderColor: '#d9d9d9',
         borderWidth: 1,
         textStyle: {
-          color: '#ffffff',
+          color: '#262626',
           fontSize: 12
         },
         formatter: (params) => {
           const size = formatSize(params.value)
           return `
             <div style="padding: 4px 0;">
-              <div style="font-weight: bold; margin-bottom: 4px; color: #ffffff;">${params.name}</div>
-              <div style="margin: 2px 0;">块数: <span style="color: #9f7aea;">${params.value}</span></div>
-              <div style="margin: 2px 0;">大小: <span style="color: #9f7aea;">${size}</span></div>
-              <div style="margin: 2px 0;">占比: <span style="color: #9f7aea; font-weight: bold;">${params.percent}%</span></div>
+              <div style="font-weight: 600; margin-bottom: 4px; color: #262626;">${params.name}</div>
+              <div style="margin: 2px 0; color: #595959;">块数: <span style="color: #1890ff; font-weight: 600;">${params.value}</span></div>
+              <div style="margin: 2px 0; color: #595959;">大小: <span style="color: #1890ff; font-weight: 600;">${size}</span></div>
+              <div style="margin: 2px 0; color: #595959;">占比: <span style="color: #1890ff; font-weight: 600;">${params.percent}%</span></div>
             </div>
           `
         }
@@ -343,9 +370,9 @@ export class ChartRenderer {
         orient: 'horizontal',
         bottom: '5%',
         left: 'center',
-        itemGap: 20,
+        itemGap: 30,
         textStyle: {
-          color: '#ffffff',
+          color: '#595959',
           fontSize: 12
         },
         icon: 'circle'
@@ -404,9 +431,9 @@ export class ChartRenderer {
         center: ['50%', '50%'],
         avoidLabelOverlap: true,
         itemStyle: {
-          borderRadius: 8,
-          borderColor: '#1a202c',
-          borderWidth: 3
+          borderRadius: 2,
+          borderColor: '#fff',
+          borderWidth: 2
         },
         label: {
           show: true,
@@ -414,19 +441,19 @@ export class ChartRenderer {
           formatter: (params) => {
             return `${params.name}\n${params.percent}%`
           },
-          color: '#ffffff',
+          color: '#595959',
           fontSize: 11,
           fontWeight: 'normal',
           lineHeight: 16,
           rich: {
             name: {
               fontSize: 11,
-              color: '#ffffff'
+              color: '#595959'
             },
             percent: {
               fontSize: 12,
-              fontWeight: 'bold',
-              color: '#9f7aea'
+              fontWeight: 600,
+              color: '#262626'
             }
           }
         },
@@ -435,54 +462,46 @@ export class ChartRenderer {
           length: 15,
           length2: 10,
           lineStyle: {
-            color: '#718096',
+            color: '#d9d9d9',
             width: 1
           }
         },
         emphasis: {
           label: {
             show: true,
-            fontSize: 13,
-            fontWeight: 'bold'
+            fontSize: 12,
+            fontWeight: 600
           },
           itemStyle: {
-            shadowBlur: 25,
+            shadowBlur: 10,
             shadowOffsetX: 0,
-            shadowOffsetY: 5,
-            shadowColor: 'rgba(159, 122, 234, 0.6)'
+            shadowOffsetY: 2,
+            shadowColor: 'rgba(0, 0, 0, 0.1)'
           },
           scale: true,
-          scaleSize: 8
+          scaleSize: 5
         },
         data: [
           { 
             value: diskData.used, 
             name: '已使用',
             itemStyle: {
-              color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
-                { offset: 0, color: '#48bb78' },
-                { offset: 0.5, color: '#38a169' },
-                { offset: 1, color: '#2f855a' }
-              ])
+              color: '#1890ff'
             }
           },
           { 
             value: diskData.free, 
             name: '空闲',
             itemStyle: {
-              color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
-                { offset: 0, color: '#718096' },
-                { offset: 0.5, color: '#5a6570' },
-                { offset: 1, color: '#4a5568' }
-              ])
+              color: '#d9d9d9'
             }
           }
         ],
         animation: true,
         animationType: 'scale',
-        animationEasing: 'cubicOut', // 使用与其他图表一致的缓动函数
-        animationDuration: 1000, // 与其他图表一致的动画时长
-        animationDelay: (idx) => idx * 150 // 稍微增加延迟，使动画更明显
+        animationEasing: 'cubicOut',
+        animationDuration: 600,
+        animationDelay: (idx) => idx * 100
       }]
     }
     
