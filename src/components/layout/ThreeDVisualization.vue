@@ -1,5 +1,27 @@
 <template>
   <div class="w-full h-full relative bg-gray-900">
+    <!-- 左侧切换按钮 -->
+    <div v-if="!showTerminal" class="view-switcher">
+      <div class="view-switcher-content">
+        <button
+          :class="['view-switch-btn', { active: currentView === 'disk' }]"
+          @click="switchView('disk')"
+          title="磁盘可视化"
+        >
+          <DatabaseOutlined />
+          <span>磁盘</span>
+        </button>
+        <button
+          :class="['view-switch-btn', { active: currentView === 'tree' }]"
+          @click="switchView('tree')"
+          title="文件结构可视化"
+        >
+          <ApartmentOutlined />
+          <span>结构</span>
+        </button>
+      </div>
+    </div>
+    
     <!-- 状态面板 - 显示当前选中的文件/文件夹信息 -->
     <div class="status-panel">
       <div class="status-panel-content">
@@ -28,6 +50,21 @@
             <span class="file-name">{{ hoveredFile.name }}</span>
           </span>
         </div>
+        <div v-if="selectedConnection" class="status-item connection-info">
+          <span class="status-label">连接关系：</span>
+          <span class="status-value">
+            <span class="connection-arrow">→</span>
+            <span :class="['file-type-badge', selectedConnection.parent.type === 'file' ? 'file-badge' : 'dir-badge']">
+              {{ selectedConnection.parent.type === 'file' ? '文件' : '文件夹' }}
+            </span>
+            <span class="file-name">{{ selectedConnection.parent.name }}</span>
+            <span class="connection-arrow">→</span>
+            <span :class="['file-type-badge', selectedConnection.child.type === 'file' ? 'file-badge' : 'dir-badge']">
+              {{ selectedConnection.child.type === 'file' ? '文件' : '文件夹' }}
+            </span>
+            <span class="file-name">{{ selectedConnection.child.name }}</span>
+          </span>
+        </div>
       </div>
     </div>
     
@@ -54,20 +91,51 @@
 
 <script setup>
 import { ref, onMounted, onUnmounted, watch } from 'vue'
-import { FolderOutlined } from '@ant-design/icons-vue'
+import { FolderOutlined, DatabaseOutlined, ApartmentOutlined } from '@ant-design/icons-vue'
 import { useFileSystemStore } from '@/stores/fileSystem'
 import { ThreeDRenderer } from '@/renderer/ThreeDRenderer'
 import { clearFileColors } from '@/utils/colorGenerator'
 import SimpleDirectoryTree from './SimpleDirectoryTree.vue'
+
+const props = defineProps({
+  showTerminal: {
+    type: Boolean,
+    default: false
+  }
+})
 
 const containerRef = ref(null)
 const fileSystemStore = useFileSystemStore()
 let renderer = null
 let currentlyHighlightedFileId = null // 跟踪当前高亮的文件ID
 
+// 视图切换
+const currentView = ref('disk') // 'disk' 或 'tree'
+
 // 状态面板相关
 const currentSelectedFile = ref(null)
 const hoveredFile = ref(null)
+const selectedConnection = ref(null) // 选中的连接关系
+
+// 切换视图
+const switchView = (view) => {
+  if (currentView.value === view) return
+  currentView.value = view
+  
+  if (renderer) {
+    if (view === 'disk') {
+      // 切换到磁盘可视化：显示磁盘块，隐藏文件结构树
+      renderer.showDiskView()
+    } else if (view === 'tree') {
+      // 切换到文件结构可视化：隐藏磁盘块，显示文件结构树
+      // 如果树不存在，先创建
+      if (!renderer.fileStructureTree && fileSystemStore.files.length > 0) {
+        renderer.createFileStructureTree(fileSystemStore.files)
+      }
+      renderer.showTreeView()
+    }
+  }
+}
 
 // 格式化文件大小
 const formatFileSize = (bytes) => {
@@ -130,14 +198,34 @@ onMounted(() => {
       })
     }
     
+    // 设置连接线选择回调
+    if (renderer.setOnConnectionSelectCallback) {
+      renderer.setOnConnectionSelectCallback((connection) => {
+        selectedConnection.value = connection
+        // 清除文件选择，因为选择了连接线
+        currentSelectedFile.value = null
+        fileSystemStore.selectedItem = null
+      })
+    }
+    
     // 初始化磁盘可视化
     if (fileSystemStore.disk.totalBlocks > 0) {
       renderer.createDisk(fileSystemStore.disk)
     }
     
-    // 初始化目录树
-    if (fileSystemStore.files.length > 0) {
-      renderer.createDirectoryTree(fileSystemStore.files)
+    // 根据当前视图显示相应内容（默认是磁盘视图）
+    if (currentView.value === 'disk') {
+      renderer.showDiskView()
+      // 确保文件结构树被隐藏（如果存在）
+      if (renderer.fileStructureTree) {
+        renderer.fileStructureTree.visible = false
+      }
+    } else {
+      // 初始化文件结构树
+      if (fileSystemStore.files.length > 0) {
+        renderer.createFileStructureTree(fileSystemStore.files)
+      }
+      renderer.showTreeView()
     }
   }
 })
@@ -174,6 +262,18 @@ watch(
         
         clearFileColors() // 清除所有文件颜色映射
         renderer.createDisk(newDisk)
+        
+        // 根据当前视图显示相应内容
+        if (currentView.value === 'disk') {
+          renderer.showDiskView()
+        } else {
+          // 如果当前是树视图，创建文件结构树
+          if (newDisk.files && newDisk.files.length > 0) {
+            renderer.createFileStructureTree(newDisk.files)
+          }
+          renderer.showTreeView()
+        }
+        
         // 调整相机位置以适应新的磁盘大小
         renderer.adjustCameraForDisk(newDisk)
         // 应用当前目录的过滤
@@ -232,7 +332,15 @@ watch(
   () => fileSystemStore.files,
   (newFiles, oldFiles) => {
     if (renderer) {
-      renderer.createDirectoryTree(newFiles)
+      // 只在树视图下才创建/更新文件结构树
+      if (currentView.value === 'tree' && newFiles.length > 0) {
+        renderer.createFileStructureTree(newFiles)
+      } else {
+        // 如果在磁盘视图下，确保文件结构树被隐藏
+        if (renderer.fileStructureTree) {
+          renderer.fileStructureTree.visible = false
+        }
+      }
       
       // 如果文件数量减少（可能是删除了文件），需要置灰对应的块
       if (oldFiles && oldFiles.length > newFiles.length) {
@@ -278,6 +386,14 @@ watch(
   (newItem, oldItem) => {
     // 更新状态面板显示的选中文件
     currentSelectedFile.value = newItem
+    
+    // 如果选中了文件，清除连接线选择
+    if (newItem) {
+      selectedConnection.value = null
+      if (renderer && renderer.resetConnectionLines) {
+        renderer.resetConnectionLines()
+      }
+    }
     
     // 如果选中项被清除（从有值变为null），重置所有块
     if (renderer && !newItem && oldItem) {
@@ -396,6 +512,19 @@ watch(
   font-size: 0.8125rem;
 }
 
+.status-item.connection-info {
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  padding-top: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.connection-arrow {
+  color: rgba(88, 166, 255, 0.8);
+  font-size: 1rem;
+  margin: 0 0.5rem;
+  font-weight: 600;
+}
+
 .directory-tree-panel {
   position: absolute;
   top: 1rem;
@@ -454,6 +583,65 @@ watch(
 
 .directory-tree-content::-webkit-scrollbar-thumb:hover {
   background: rgba(255, 255, 255, 0.5);
+}
+
+/* 视图切换器样式 */
+.view-switcher {
+  position: absolute;
+  left: 1rem;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 200;
+}
+
+.view-switcher-content {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  
+  /* 毛玻璃效果 */
+  background: rgba(255, 255, 255, 0.15);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 12px;
+  box-shadow: 0 8px 32px 0 rgba(31, 38, 135, 0.37);
+  padding: 0.5rem;
+}
+
+.view-switch-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.25rem;
+  padding: 0.75rem 0.5rem;
+  min-width: 60px;
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  color: rgba(255, 255, 255, 0.7);
+  cursor: pointer;
+  transition: all 0.3s ease;
+  font-size: 0.75rem;
+}
+
+.view-switch-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.9);
+  border-color: rgba(255, 255, 255, 0.3);
+}
+
+.view-switch-btn.active {
+  background: rgba(59, 130, 246, 0.3);
+  color: rgba(147, 197, 253, 1);
+  border-color: rgba(59, 130, 246, 0.5);
+  box-shadow: 0 0 12px rgba(59, 130, 246, 0.3);
+}
+
+.view-switch-btn span {
+  font-size: 0.75rem;
+  font-weight: 500;
 }
 </style>
 
