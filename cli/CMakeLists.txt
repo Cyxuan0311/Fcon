@@ -4,6 +4,18 @@ project(fcon VERSION 1.0.0 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Windows特定设置
+if(WIN32)
+    # 设置Windows子系统为控制台
+    set(CMAKE_WIN32_EXECUTABLE FALSE)
+    # 设置输出目录
+    if(CMAKE_BUILD_TYPE STREQUAL "Release")
+        set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin/Release)
+    else()
+        set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin/Debug)
+    endif()
+endif()
+
 # 查找nlohmann-json
 # 1. 首先尝试查找系统安装的包
 find_package(nlohmann_json 3.2.0 QUIET)
@@ -62,15 +74,21 @@ else()
     set(JSON_TARGET nlohmann_json::nlohmann_json)
 endif()
 
+# 查找线程库
+find_package(Threads REQUIRED)
+
 # 可执行文件
 add_executable(fcon
     src/main.cpp
     src/FileSystemScanner.cpp
     src/FileSystemScanner.h
+    src/ProgressBar.cpp
+    src/ProgressBar.h
 )
 
 target_link_libraries(fcon
     ${JSON_TARGET}
+    Threads::Threads
 )
 
 # 安装
@@ -78,8 +96,18 @@ install(TARGETS fcon
     RUNTIME DESTINATION bin
 )
 
-# 设置输出目录
-set_target_properties(fcon PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
-)
+# 设置输出目录（跨平台）
+if(WIN32)
+    # Windows: 根据构建类型设置输出目录
+    set_target_properties(fcon PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY_DEBUG ${CMAKE_BINARY_DIR}/bin/Debug
+        RUNTIME_OUTPUT_DIRECTORY_RELEASE ${CMAKE_BINARY_DIR}/bin/Release
+        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+    )
+else()
+    # Linux/Unix: 统一输出目录
+    set_target_properties(fcon PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+    )
+endif()
 
