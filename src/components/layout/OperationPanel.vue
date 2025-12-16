@@ -341,6 +341,170 @@
             </Card>
           </div>
         </TabPane>
+        
+        <!-- 模拟测试标签页 -->
+        <TabPane key="simulation" tab="模拟测试">
+          <div class="space-y-4 pt-2">
+            <Card size="small" class="mb-4">
+              <div class="space-y-4">
+                <div>
+                  <h3 class="text-sm font-semibold mb-3 text-gray-700">测试配置</h3>
+                  
+                  <Form layout="vertical" :model="testConfig">
+                    <FormItem label="测试类型">
+                      <Select 
+                        v-model:value="testConfig.testType" 
+                        size="large"
+                        :options="[
+                          { label: '读写性能测试', value: 'readwrite' },
+                          { label: '碎片化测试', value: 'fragmentation' },
+                          { label: '并发操作测试', value: 'concurrent' },
+                          { label: '综合性能测试', value: 'comprehensive' }
+                        ]"
+                      />
+                    </FormItem>
+                    
+                    <FormItem label="测试文件数量">
+                      <InputNumber 
+                        v-model:value="testConfig.fileCount" 
+                        class="w-full"
+                        size="large"
+                        :min="1"
+                        :max="1000"
+                        placeholder="测试文件数量"
+                      />
+                    </FormItem>
+                    
+                    <FormItem label="文件大小范围 (KB)">
+                      <div class="flex items-center gap-2">
+                        <InputNumber 
+                          v-model:value="testConfig.minFileSize" 
+                          class="flex-1"
+                          size="large"
+                          :min="1"
+                          :max="10240"
+                          placeholder="最小"
+                        />
+                        <span class="text-gray-400">-</span>
+                        <InputNumber 
+                          v-model:value="testConfig.maxFileSize" 
+                          class="flex-1"
+                          size="large"
+                          :min="1"
+                          :max="10240"
+                          placeholder="最大"
+                        />
+                      </div>
+                    </FormItem>
+                    
+                    <FormItem label="操作次数">
+                      <InputNumber 
+                        v-model:value="testConfig.operationCount" 
+                        class="w-full"
+                        size="large"
+                        :min="1"
+                        :max="10000"
+                        placeholder="操作次数"
+                      />
+                    </FormItem>
+                    
+                    <FormItem label="分配算法">
+                      <Select 
+                        v-model:value="testConfig.allocationAlgorithm" 
+                        size="large"
+                        :options="[
+                          { label: '连续分配', value: 'continuous' },
+                          { label: '链接分配', value: 'linked' },
+                          { label: '索引分配', value: 'indexed' }
+                        ]"
+                      />
+                    </FormItem>
+                    
+                    <FormItem label="测试间隔 (ms)">
+                      <InputNumber 
+                        v-model:value="testConfig.interval" 
+                        class="w-full"
+                        size="large"
+                        :min="10"
+                        :max="5000"
+                        placeholder="操作间隔时间"
+                      />
+                    </FormItem>
+                  </Form>
+                  
+                  <Divider />
+                  
+                  <!-- 测试配置导入导出 -->
+                  <div class="mb-4">
+                    <div class="mb-2">
+                      <span class="text-sm text-gray-600 font-medium">测试配置管理</span>
+                    </div>
+                    <Space class="w-full" :size="8" direction="vertical">
+                      <div class="flex gap-2 w-full">
+                        <div class="flex-1 relative">
+                          <input
+                            ref="testConfigInput"
+                            type="file"
+                            accept=".json"
+                            @change="handleTestConfigUpload"
+                            class="hidden"
+                          />
+                          <Button
+                            @click="triggerTestConfigInput"
+                            class="w-full"
+                            :icon="h(UploadOutlined)"
+                            size="large"
+                          >
+                            导入配置
+                          </Button>
+                        </div>
+                        <Button
+                          @click="exportTestConfigTemplate"
+                          class="flex-1"
+                          :icon="h(DownloadOutlined)"
+                          size="large"
+                        >
+                          下载模板
+                        </Button>
+                      </div>
+                    </Space>
+                    <p class="text-xs text-gray-400 mt-1">支持导入/导出测试配置JSON文件</p>
+                  </div>
+                  
+                  <Divider />
+                  
+                  <div class="flex gap-2">
+                    <Button 
+                      @click="startSimulation"
+                      type="primary"
+                      class="flex-1"
+                      size="large"
+                      :loading="isSimulating"
+                      :disabled="!canStartSimulation"
+                    >
+                      {{ isSimulating ? '测试运行中...' : '开始测试' }}
+                    </Button>
+                    <Button 
+                      @click="stopSimulation"
+                      class="flex-1"
+                      size="large"
+                      :disabled="!isSimulating"
+                    >
+                      停止测试
+                    </Button>
+                  </div>
+                  
+                  <div v-if="testStatus" class="mt-3 p-3 bg-blue-50 border border-blue-200 rounded-lg">
+                    <div class="text-sm text-blue-800">
+                      <div class="font-medium mb-1">测试状态：</div>
+                      <div class="text-xs">{{ testStatus }}</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </Card>
+          </div>
+        </TabPane>
       </Tabs>
     </div>
   </div>
@@ -374,7 +538,7 @@
 <script setup>
 import { ref, watch, computed, h, reactive, onMounted, onUnmounted, onBeforeUnmount, nextTick } from 'vue'
 import { UploadOutlined, DownloadOutlined, UpOutlined, HomeOutlined } from '@ant-design/icons-vue'
-import { Button, Select, InputNumber, Input, message, Modal, Tabs, Form, Card, Divider, Space } from 'ant-design-vue'
+import { Button, Select, InputNumber, Input, message, Modal, Tabs, Form, Card, Divider, Space, Badge } from 'ant-design-vue'
 import { useFileSystemStore } from '@/stores/fileSystem'
 import { usePerformanceStore } from '@/stores/performance'
 import { DataCollector } from '@/data/DataCollector'
@@ -401,7 +565,35 @@ const allocationAlgorithm = ref('continuous')
 const isProcessing = ref(false)
 const selectedDirId = ref('root')
 const fileInput = ref(null)
+const testConfigInput = ref(null) // 测试配置文件输入
 const activeTab = ref('config') // 当前激活的标签页
+
+// 模拟测试相关
+const testConfig = reactive({
+  testType: 'readwrite',
+  fileCount: 50,
+  minFileSize: 10,
+  maxFileSize: 1000,
+  operationCount: 100,
+  allocationAlgorithm: 'continuous',
+  interval: 100
+})
+
+const isSimulating = ref(false)
+const testStatus = ref('')
+let simulationTimer = null
+let simulationInterval = null
+let currentTestStep = 0
+
+// 检查是否可以开始测试
+const canStartSimulation = computed(() => {
+  return !isSimulating.value && 
+         fileSystemStore.disk.totalBlocks > 0 &&
+         testConfig.fileCount > 0 &&
+         testConfig.operationCount > 0 &&
+         testConfig.minFileSize > 0 &&
+         testConfig.maxFileSize >= testConfig.minFileSize
+})
 
 // 性能图表相关
 const chartContainer = ref(null)
@@ -433,7 +625,12 @@ const getOperationName = (operation) => {
   const map = {
     'create_file': '创建文件',
     'delete_file': '删除文件',
-    'defragment': '碎片整理'
+    'defragment': '碎片整理',
+    'simulation_readwrite': '读写测试',
+    'simulation_fragmentation': '碎片测试',
+    'simulation_concurrent': '并发测试',
+    'simulation_defragment': '整理测试',
+    'simulation_comprehensive': '综合测试'
   }
   return map[operation] || operation
 }
@@ -443,7 +640,12 @@ const getOperationBadgeClass = (operation) => {
   const map = {
     'create_file': 'badge-success',
     'delete_file': 'badge-danger',
-    'defragment': 'badge-warning'
+    'defragment': 'badge-warning',
+    'simulation_readwrite': 'badge-info',
+    'simulation_fragmentation': 'badge-warning',
+    'simulation_concurrent': 'badge-info',
+    'simulation_defragment': 'badge-success',
+    'simulation_comprehensive': 'badge-primary'
   }
   return map[operation] || ''
 }
@@ -903,6 +1105,432 @@ const defragment = async () => {
   })
 }
 
+// 模拟测试相关函数
+const startSimulation = async () => {
+  if (!canStartSimulation.value) {
+    message.warning('请先初始化磁盘并配置测试参数')
+    return
+  }
+  
+  isSimulating.value = true
+  currentTestStep = 0
+  testStatus.value = '准备开始测试...'
+  
+  // 根据测试类型执行不同的测试
+  switch (testConfig.testType) {
+    case 'readwrite':
+      await runReadWriteTest()
+      break
+    case 'fragmentation':
+      await runFragmentationTest()
+      break
+    case 'concurrent':
+      await runConcurrentTest()
+      break
+    case 'comprehensive':
+      await runComprehensiveTest()
+      break
+  }
+}
+
+const stopSimulation = () => {
+  isSimulating.value = false
+  testStatus.value = '测试已停止'
+  
+  if (simulationTimer) {
+    clearTimeout(simulationTimer)
+    simulationTimer = null
+  }
+  if (simulationInterval) {
+    clearInterval(simulationInterval)
+    simulationInterval = null
+  }
+  
+  message.info('测试已停止')
+}
+
+const runReadWriteTest = async () => {
+  testStatus.value = `开始读写性能测试 (0/${testConfig.operationCount})`
+  
+  for (let i = 0; i < testConfig.operationCount && isSimulating.value; i++) {
+    currentTestStep = i + 1
+    testStatus.value = `读写性能测试进行中 (${currentTestStep}/${testConfig.operationCount})`
+    
+    const startTime = performance.now()
+    
+    // 模拟创建文件
+    const fileSize = Math.floor(Math.random() * (testConfig.maxFileSize - testConfig.minFileSize + 1) + testConfig.minFileSize) * 1024
+    const fileName = `test_file_${i + 1}.txt`
+    
+    try {
+      await fileSystemStore.createFile({
+        name: fileName,
+        size: fileSize,
+        type: 'file',
+        parentId: 'root'
+      }, testConfig.allocationAlgorithm)
+      
+      const endTime = performance.now()
+      const duration = endTime - startTime
+      
+      // 计算IO次数（基于文件大小和块大小）
+      const ioCount = Math.ceil(fileSize / (fileSystemStore.disk.blockSize))
+      const throughput = (fileSize / duration) * 1000 / 1024 // KB/s
+      
+      // 添加性能数据
+      performanceStore.addPerformanceData({
+        operation: 'simulation_readwrite',
+        duration,
+        ioCount,
+        throughput,
+        fileSize,
+        fileName,
+        fileSystemType: fileSystemStore.fileSystemType,
+        algorithm: testConfig.allocationAlgorithm
+      })
+      
+      // 更新实时指标
+      performanceStore.updateRealtimeMetrics({
+        ioThroughput: throughput,
+        avgResponseTime: duration,
+        diskUtilization: fileSystemStore.diskUtilization
+      })
+      
+      // 等待指定间隔
+      await new Promise(resolve => setTimeout(resolve, testConfig.interval))
+    } catch (error) {
+      console.error('测试操作失败:', error)
+      message.error(`测试操作失败: ${error.message}`)
+    }
+  }
+  
+  if (isSimulating.value) {
+    testStatus.value = '读写性能测试完成'
+    message.success('测试完成')
+    isSimulating.value = false
+  }
+}
+
+const runFragmentationTest = async () => {
+  testStatus.value = `开始碎片化测试 (0/${testConfig.operationCount})`
+  
+  // 先创建一些文件
+  const createdFiles = []
+  for (let i = 0; i < testConfig.fileCount && isSimulating.value; i++) {
+    const fileSize = Math.floor(Math.random() * (testConfig.maxFileSize - testConfig.minFileSize + 1) + testConfig.minFileSize) * 1024
+    const fileName = `frag_test_${i + 1}.txt`
+    
+    try {
+      await fileSystemStore.createFile({
+        name: fileName,
+        size: fileSize,
+        type: 'file',
+        parentId: 'root'
+      }, testConfig.allocationAlgorithm)
+      const createdFile = fileSystemStore.files.find(f => f.name === fileName)
+      if (createdFile) {
+        createdFiles.push({ name: fileName, id: createdFile.id })
+      }
+      
+      testStatus.value = `创建文件中 (${i + 1}/${testConfig.fileCount})`
+      await new Promise(resolve => setTimeout(resolve, testConfig.interval))
+    } catch (error) {
+      console.error('创建文件失败:', error)
+    }
+  }
+  
+  // 然后删除一些文件，创建碎片
+  for (let i = 0; i < Math.min(createdFiles.length, testConfig.operationCount) && isSimulating.value; i++) {
+    if (createdFiles[i] && createdFiles[i].id) {
+      const startTime = performance.now()
+      
+      try {
+        await fileSystemStore.deleteFile(createdFiles[i].id)
+        
+        const endTime = performance.now()
+        const duration = endTime - startTime
+        
+        // 更新碎片率
+        performanceStore.updateRealtimeMetrics({
+          fragmentRate: fileSystemStore.disk.fragmentRate,
+          diskUtilization: fileSystemStore.diskUtilization
+        })
+        
+        performanceStore.addPerformanceData({
+          operation: 'simulation_fragmentation',
+          duration,
+          ioCount: 1,
+          throughput: 0,
+          fileSystemType: fileSystemStore.fileSystemType,
+          algorithm: testConfig.allocationAlgorithm
+        })
+        
+        testStatus.value = `碎片化测试进行中 (${i + 1}/${Math.min(createdFiles.length, testConfig.operationCount)})`
+        await new Promise(resolve => setTimeout(resolve, testConfig.interval))
+      } catch (error) {
+        console.error('删除文件失败:', error)
+      }
+    }
+  }
+  
+  if (isSimulating.value) {
+    testStatus.value = '碎片化测试完成'
+    message.success('测试完成')
+    isSimulating.value = false
+  }
+}
+
+const runConcurrentTest = async () => {
+  testStatus.value = `开始并发操作测试 (0/${testConfig.operationCount})`
+  
+  const operations = []
+  for (let i = 0; i < testConfig.operationCount && isSimulating.value; i++) {
+    const startTime = performance.now()
+    const fileSize = Math.floor(Math.random() * (testConfig.maxFileSize - testConfig.minFileSize + 1) + testConfig.minFileSize) * 1024
+    const fileName = `concurrent_test_${i + 1}.txt`
+    
+    operations.push(
+      fileSystemStore.createFile({
+        name: fileName,
+        size: fileSize,
+        type: 'file',
+        parentId: 'root'
+      }, testConfig.allocationAlgorithm).then(() => {
+        const endTime = performance.now()
+        const duration = endTime - startTime
+        const ioCount = Math.ceil(fileSize / (fileSystemStore.disk.blockSize))
+        const throughput = (fileSize / duration) * 1000 / 1024
+        
+        performanceStore.addPerformanceData({
+          operation: 'simulation_concurrent',
+          duration,
+          ioCount,
+          throughput,
+          fileSize,
+          fileName,
+          fileSystemType: fileSystemStore.fileSystemType,
+          algorithm: testConfig.allocationAlgorithm
+        })
+        
+        performanceStore.updateRealtimeMetrics({
+          ioThroughput: throughput,
+          avgResponseTime: duration,
+          diskUtilization: fileSystemStore.diskUtilization
+        })
+      }).catch(error => {
+        console.error('并发操作失败:', error)
+      })
+    )
+    
+    testStatus.value = `并发操作测试进行中 (${i + 1}/${testConfig.operationCount})`
+    
+    // 每10个操作等待一次
+    if ((i + 1) % 10 === 0) {
+      await Promise.all(operations.slice(-10))
+      await new Promise(resolve => setTimeout(resolve, testConfig.interval))
+    }
+  }
+  
+  // 等待所有操作完成
+  await Promise.all(operations)
+  
+  if (isSimulating.value) {
+    testStatus.value = '并发操作测试完成'
+    message.success('测试完成')
+    isSimulating.value = false
+  }
+}
+
+const runComprehensiveTest = async () => {
+  testStatus.value = '开始综合性能测试'
+  
+  // 1. 读写测试
+  testStatus.value = '阶段1/4: 读写性能测试'
+  await runReadWriteTest()
+  if (!isSimulating.value) return
+  
+  // 2. 碎片化测试
+  testStatus.value = '阶段2/4: 碎片化测试'
+  await runFragmentationTest()
+  if (!isSimulating.value) return
+  
+  // 3. 并发测试
+  testStatus.value = '阶段3/4: 并发操作测试'
+  await runConcurrentTest()
+  if (!isSimulating.value) return
+  
+  // 4. 碎片整理
+  testStatus.value = '阶段4/4: 碎片整理测试'
+  const startTime = performance.now()
+  await fileSystemStore.defragment()
+  const endTime = performance.now()
+  const duration = endTime - startTime
+  
+  performanceStore.addPerformanceData({
+    operation: 'simulation_defragment',
+    duration,
+    ioCount: Math.ceil(fileSystemStore.disk.totalBlocks / 10),
+    throughput: (fileSystemStore.disk.totalBlocks * fileSystemStore.disk.blockSize) / duration * 1000 / 1024,
+    fileSystemType: fileSystemStore.fileSystemType,
+    algorithm: 'compact'
+  })
+  
+  performanceStore.updateRealtimeMetrics({
+    fragmentRate: fileSystemStore.disk.fragmentRate,
+    diskUtilization: fileSystemStore.diskUtilization
+  })
+  
+  if (isSimulating.value) {
+    testStatus.value = '综合性能测试完成'
+    message.success('所有测试完成')
+    isSimulating.value = false
+  }
+}
+
+// 触发测试配置文件选择
+const triggerTestConfigInput = (event) => {
+  if (event) {
+    event.preventDefault()
+    event.stopPropagation()
+  }
+  if (testConfigInput.value) {
+    testConfigInput.value.click()
+  } else {
+    console.error('测试配置文件输入元素未找到')
+  }
+}
+
+// 处理测试配置文件上传
+const handleTestConfigUpload = async (event) => {
+  const file = event.target.files[0]
+  if (!file) return
+  
+  // 检查文件类型
+  if (!file.name.endsWith('.json')) {
+    message.warning('请上传JSON格式的文件')
+    return
+  }
+  
+  try {
+    // 读取文件内容
+    const text = await file.text()
+    const jsonData = JSON.parse(text)
+    
+    // 验证配置格式
+    if (!jsonData.testType || !jsonData.fileCount || !jsonData.operationCount) {
+      message.error('配置文件格式不正确，缺少必要字段')
+      return
+    }
+    
+    // 验证配置值
+    if (jsonData.fileCount < 1 || jsonData.fileCount > 1000) {
+      message.error('测试文件数量必须在1-1000之间')
+      return
+    }
+    
+    if (jsonData.operationCount < 1 || jsonData.operationCount > 10000) {
+      message.error('操作次数必须在1-10000之间')
+      return
+    }
+    
+    if (jsonData.minFileSize < 1 || jsonData.maxFileSize < 1) {
+      message.error('文件大小必须大于0')
+      return
+    }
+    
+    if (jsonData.maxFileSize < jsonData.minFileSize) {
+      message.error('最大文件大小不能小于最小文件大小')
+      return
+    }
+    
+    if (jsonData.interval < 10 || jsonData.interval > 5000) {
+      message.error('测试间隔必须在10-5000ms之间')
+      return
+    }
+    
+    // 更新测试配置
+    testConfig.testType = jsonData.testType || 'readwrite'
+    testConfig.fileCount = jsonData.fileCount || 50
+    testConfig.minFileSize = jsonData.minFileSize || 10
+    testConfig.maxFileSize = jsonData.maxFileSize || 1000
+    testConfig.operationCount = jsonData.operationCount || 100
+    testConfig.allocationAlgorithm = jsonData.allocationAlgorithm || 'continuous'
+    testConfig.interval = jsonData.interval || 100
+    
+    message.success('测试配置导入成功！')
+  } catch (error) {
+    console.error('配置文件解析错误:', error)
+    message.error(`配置文件解析失败: ${error.message}\n请确保JSON文件格式正确`)
+  } finally {
+    // 清空文件输入
+    if (testConfigInput.value) {
+      testConfigInput.value.value = ''
+    }
+  }
+}
+
+// 导出测试配置模板
+const exportTestConfigTemplate = () => {
+  try {
+    // 创建模板配置对象
+    const templateConfig = {
+      testType: 'readwrite',
+      fileCount: 50,
+      minFileSize: 10,
+      maxFileSize: 1000,
+      operationCount: 100,
+      allocationAlgorithm: 'continuous',
+      interval: 100,
+      description: '测试配置模板 - 可根据需要修改参数',
+      testTypes: {
+        readwrite: '读写性能测试 - 测试文件的创建和读写性能',
+        fragmentation: '碎片化测试 - 测试文件系统碎片化情况',
+        concurrent: '并发操作测试 - 测试并发文件操作的性能',
+        comprehensive: '综合性能测试 - 包含所有测试类型的完整测试'
+      },
+      allocationAlgorithms: {
+        continuous: '连续分配 - 文件占用连续的磁盘块',
+        linked: '链接分配 - 文件块通过指针链接',
+        indexed: '索引分配 - 使用索引表管理文件块'
+      },
+      parameters: {
+        testType: '测试类型：readwrite | fragmentation | concurrent | comprehensive',
+        fileCount: '测试文件数量：1-1000',
+        minFileSize: '最小文件大小（KB）：1-10240',
+        maxFileSize: '最大文件大小（KB）：1-10240，必须 >= minFileSize',
+        operationCount: '操作次数：1-10000',
+        allocationAlgorithm: '分配算法：continuous | linked | indexed',
+        interval: '操作间隔（毫秒）：10-5000'
+      }
+    }
+    
+    // 转换为JSON字符串
+    const jsonString = JSON.stringify(templateConfig, null, 2)
+    
+    // 创建Blob对象
+    const blob = new Blob([jsonString], { type: 'application/json' })
+    
+    // 创建下载链接
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = 'test_config_template.json'
+    
+    // 触发下载
+    document.body.appendChild(link)
+    link.click()
+    
+    // 清理
+    document.body.removeChild(link)
+    URL.revokeObjectURL(url)
+    
+    message.success('测试配置模板导出成功！')
+  } catch (error) {
+    console.error('导出测试配置模板错误:', error)
+    message.error(`导出失败: ${error.message}`)
+  }
+}
+
 // 性能图表相关方法
 const switchChartType = (type) => {
   chartType.value = type
@@ -950,7 +1578,12 @@ const updateChart = () => {
       operations.map((op, index) => ({
         operation: op === 'create_file' ? '创建文件' : 
                    op === 'delete_file' ? '删除文件' : 
-                   op === 'defragment' ? '碎片整理' : op,
+                   op === 'defragment' ? '碎片整理' :
+                   op === 'simulation_readwrite' ? '读写测试' :
+                   op === 'simulation_fragmentation' ? '碎片测试' :
+                   op === 'simulation_concurrent' ? '并发测试' :
+                   op === 'simulation_defragment' ? '整理测试' :
+                   op === 'simulation_comprehensive' ? '综合测试' : op,
         duration: durations[index]
       }))
     )
@@ -1234,5 +1867,17 @@ onUnmounted(() => {
   background-color: #fffbe6;
   color: #faad14;
   border: 1px solid #ffe58f;
+}
+
+.badge-info {
+  background-color: #e6f7ff;
+  color: #1890ff;
+  border: 1px solid #91d5ff;
+}
+
+.badge-primary {
+  background-color: #f0f5ff;
+  color: #2f54eb;
+  border: 1px solid #adc6ff;
 }
 </style>
