@@ -30,8 +30,17 @@ export class ThreeDRenderer {
     this.fileStructureTree = null // 文件结构树组
     this.fileStructureNodes = new Map() // 文件结构节点映射
     this.fileStructureLines = [] // 文件结构连接线
-    this.currentView = 'disk' // 当前视图：'disk' 或 'tree'
+    this.currentView = 'disk' // 当前视图：'disk'、'tree' 或 'index'
     this.gridHelper = null // 网格辅助对象
+    // 索引可视化相关
+    this.indexVisualizationGroup = null // 索引可视化组
+    this.indexBlocks = [] // 索引可视化中的块
+    this.indexLines = [] // 索引可视化中的连接线
+    this.indexLabels = [] // 索引可视化中的标签
+    this.indexInfoPanel = null // 索引信息面板
+    this.textLabelCache = new Map() // 文字标签缓存（性能优化）
+    this.sharedGeometry = new Map() // 共享几何体缓存
+    this.sharedMaterial = new Map() // 共享材质缓存
   }
   
   /**
@@ -1356,6 +1365,21 @@ export class ThreeDRenderer {
       })
     }
     
+    // 更新索引可视化的文本标签朝向相机（性能优化：每3帧更新一次）
+    if (this.currentView === 'index' && this.indexLabels && this.camera) {
+      if (!this.labelUpdateFrame) this.labelUpdateFrame = 0
+      this.labelUpdateFrame++
+      if (this.labelUpdateFrame % 3 === 0) { // 每3帧更新一次
+        this.indexLabels.forEach(label => {
+          if (label) {
+            label.lookAt(this.camera.position)
+          }
+        })
+      }
+    }
+    
+    // 信息面板固定位置，不需要旋转（已移除lookAt逻辑）
+    
     if (this.renderer && this.scene && this.camera) {
       this.renderer.render(this.scene, this.camera)
     }
@@ -2030,9 +2054,965 @@ export class ThreeDRenderer {
   }
   
   /**
+   * 显示索引可视化视图
+   */
+  showIndexVisualization() {
+    this.currentView = 'index'
+    if (this.indexVisualizationGroup) {
+      this.indexVisualizationGroup.visible = true
+    }
+    if (this.gridHelper) {
+      this.gridHelper.visible = false
+    }
+  }
+  
+  /**
+   * 隐藏索引可视化视图
+   */
+  hideIndexVisualization() {
+    if (this.indexVisualizationGroup) {
+      this.indexVisualizationGroup.visible = false
+    }
+  }
+  
+  /**
+   * 隐藏磁盘视图
+   */
+  hideDiskView() {
+    this.diskBlocks.forEach(block => {
+      if (block) {
+        block.visible = false
+      }
+    })
+  }
+  
+  /**
+   * 可视化文件的索引分配情况
+   * @param {Object} file - 文件对象
+   */
+  visualizeFileIndex(file) {
+    if (!file || file.type !== 'file' || !file.blocks || file.blocks.length === 0) {
+      return
+    }
+    
+    // 清除之前的可视化
+    this.clearIndexVisualization()
+    
+    // 创建索引可视化组
+    this.indexVisualizationGroup = new THREE.Group()
+    this.indexVisualizationGroup.visible = true
+    this.scene.add(this.indexVisualizationGroup)
+    
+    const algorithm = file.allocationAlgorithm || 'continuous'
+    const blocks = file.blocks
+    const blockSize = 0.8 // 块的大小
+    const spacing = 1.0 // 块之间的间距
+    const blocksPerRow = 20 // 每行块数
+    
+    // 确保disk信息可用（从fileSystemStore获取）
+    if (!this.disk && file.disk) {
+      this.disk = file.disk
+    }
+    
+    // 根据分配算法进行不同的可视化
+    if (algorithm === 'continuous') {
+      this.visualizeContinuousAllocation(file, blocks, blockSize, spacing, blocksPerRow)
+    } else if (algorithm === 'linked') {
+      this.visualizeLinkedAllocation(file, blocks, blockSize, spacing, blocksPerRow)
+    } else if (algorithm === 'indexed') {
+      this.visualizeIndexedAllocation(file, blocks, blockSize, spacing, blocksPerRow)
+    }
+    
+    // 调整相机位置（先调整相机，确保面板位置正确）
+    this.adjustCameraForIndex(blocks.length, blocksPerRow)
+    
+    // 创建信息面板（在相机调整后创建，确保面板位置和朝向正确）
+    this.createIndexInfoPanel(file)
+  }
+  
+  /**
+   * 可视化连续分配（直接块 -> 磁盘块）
+   */
+  visualizeContinuousAllocation(file, blocks, blockSize, spacing, blocksPerRow) {
+    const directBlockColor = 0x4285f4 // 蓝色 - 直接块
+    const diskBlockColor = 0x34a853 // 绿色 - 磁盘块
+    const lineColor = 0xffffff // 白色连接线
+    
+    // 左侧：直接块区域，右侧：磁盘块区域
+    const leftX = -6 // 直接块位置
+    const rightX = 3 // 磁盘块位置
+    const verticalSpacing = 1.2
+    
+    // 限制显示的块数量，避免过多（性能优化）
+    const maxDisplayBlocks = Math.min(blocks.length, 8)
+    const displayBlocks = blocks.slice(0, maxDisplayBlocks)
+    
+    // 性能优化：共享几何体和材质
+    const directGeometry = new THREE.BoxGeometry(blockSize * 1.2, blockSize * 1.2, blockSize * 1.2)
+    const directMaterial = new THREE.MeshLambertMaterial({ 
+      color: directBlockColor,
+      emissive: directBlockColor,
+      emissiveIntensity: 0.3
+    })
+    const diskGeometry = new THREE.BoxGeometry(blockSize, blockSize, blockSize)
+    const diskMaterial = new THREE.MeshLambertMaterial({ 
+      color: diskBlockColor,
+      emissive: diskBlockColor,
+      emissiveIntensity: 0.2
+    })
+    
+    displayBlocks.forEach((blockNum, index) => {
+      const y = (maxDisplayBlocks / 2 - index - 0.5) * verticalSpacing
+      
+      // 左侧：创建直接块（使用共享几何体和材质）
+      const directMesh = new THREE.Mesh(directGeometry, directMaterial)
+      directMesh.position.set(leftX, y, 0)
+      directMesh.userData = { type: 'directBlock', blockNum, fileId: file.id }
+      this.indexVisualizationGroup.add(directMesh)
+      this.indexBlocks.push(directMesh)
+      
+      // 直接块标签（显示逻辑块号）
+      // blocks数组中的值（blockNum）是逻辑块号
+      const directLabel = this.createTextLabel(`直接块\n逻辑#${blockNum}`, 0.4, '#ffffff')
+      directLabel.position.set(leftX, y, blockSize * 0.6 + 0.25)
+      this.indexVisualizationGroup.add(directLabel)
+      this.indexLabels.push(directLabel)
+      
+      // 右侧：创建磁盘块（使用共享几何体和材质）
+      const diskMesh = new THREE.Mesh(diskGeometry, diskMaterial)
+      diskMesh.position.set(rightX, y, 0)
+      diskMesh.userData = { type: 'diskBlock', blockNum, fileId: file.id }
+      this.indexVisualizationGroup.add(diskMesh)
+      this.indexBlocks.push(diskMesh)
+      
+      // 磁盘块标签（显示物理块号）
+      // 在连续分配中，逻辑块号和物理块号可能不同
+      // 需要通过extent映射来查找物理块号
+      let physicalInfo = `块#${blockNum}`
+      if (file.extents && file.extents.length > 0 && this.disk?.blockSize) {
+        const blockSizeBytes = this.disk.blockSize
+        // 计算此逻辑块在文件中的字节偏移
+        const logicalByteOffset = index * blockSizeBytes
+        // 查找包含此逻辑偏移的extent
+        const extent = file.extents.find(e => {
+          return logicalByteOffset >= e.logicalOffset && 
+                 logicalByteOffset < e.logicalOffset + e.length
+        })
+        if (extent) {
+          // 计算物理块号
+          // 物理偏移 = extent的物理偏移 + (逻辑块在extent中的偏移)
+          const offsetInExtent = logicalByteOffset - extent.logicalOffset
+          const physicalByteOffset = extent.physicalOffset + offsetInExtent
+          const physicalBlock = Math.floor(physicalByteOffset / blockSizeBytes)
+          physicalInfo = `块#${blockNum}\n物:${physicalBlock}`
+        }
+      }
+      const diskLabel = this.createTextLabel(physicalInfo, 0.4, '#ffffff')
+      diskLabel.position.set(rightX, y, blockSize / 2 + 0.3)
+      this.indexVisualizationGroup.add(diskLabel)
+      this.indexLabels.push(diskLabel)
+      
+      // 连接线：直接块 -> 磁盘块
+      const lineGeometry = new THREE.BufferGeometry().setFromPoints([
+        new THREE.Vector3(leftX + blockSize * 0.6, y, 0),
+        new THREE.Vector3(rightX - blockSize / 2, y, 0)
+      ])
+      const lineMaterial = new THREE.LineBasicMaterial({ 
+        color: lineColor, 
+        linewidth: 3,
+        opacity: 0.8,
+        transparent: true
+      })
+      const line = new THREE.Line(lineGeometry, lineMaterial)
+      this.indexVisualizationGroup.add(line)
+      this.indexLines.push(line)
+      
+      // 添加箭头
+      const arrowX = (leftX + rightX) / 2
+      const arrowGeometry = new THREE.ConeGeometry(0.1, 0.3, 8)
+      const arrowMaterial = new THREE.MeshBasicMaterial({ color: lineColor })
+      const arrow = new THREE.Mesh(arrowGeometry, arrowMaterial)
+      arrow.position.set(arrowX, y, 0)
+      arrow.rotation.z = -Math.PI / 2
+      this.indexVisualizationGroup.add(arrow)
+      this.indexLines.push(arrow)
+    })
+    
+    // 如果块数超过显示数量，添加省略号提示
+    if (blocks.length > maxDisplayBlocks) {
+      const ellipsisLabel = this.createTextLabel('...', 0.4, '#ffffff')
+      ellipsisLabel.position.set(0, -maxDisplayBlocks / 2 * verticalSpacing - 1, 0)
+      this.indexVisualizationGroup.add(ellipsisLabel)
+      this.indexLabels.push(ellipsisLabel)
+    }
+    
+    // 添加标题标签（增大尺寸）
+    const title = this.createTextLabel(
+      `连续分配（直接块）：共 ${blocks.length} 个块`,
+      0.7,
+      '#ffffff'
+    )
+    title.position.set(0, maxDisplayBlocks / 2 * verticalSpacing + 2, 0)
+    this.indexVisualizationGroup.add(title)
+    this.indexLabels.push(title)
+  }
+  
+  /**
+   * 可视化链式分配（每个块包含指向下一个块的指针）
+   */
+  visualizeLinkedAllocation(file, blocks, blockSize, spacing, blocksPerRow) {
+    const blockColor = 0x4285f4 // 蓝色 - 数据块
+    const pointerColor = 0xff6b6b // 红色 - 指针
+    const lineColor = 0x34a853 // 绿色 - 连接线
+    
+    // 限制显示的块数量（性能优化）
+    const maxDisplayBlocks = Math.min(blocks.length, 6)
+    const displayBlocks = blocks.slice(0, maxDisplayBlocks)
+    const verticalSpacing = 1.5
+    const blockX = 0 // 块的水平位置
+    
+    // 性能优化：共享几何体和材质
+    const blockGeometry = new THREE.BoxGeometry(blockSize * 1.5, blockSize * 1.2, blockSize * 1.2)
+    const blockMaterial = new THREE.MeshLambertMaterial({ 
+      color: blockColor,
+      emissive: blockColor,
+      emissiveIntensity: 0.2
+    })
+    const pointerGeometry = new THREE.SphereGeometry(0.2, 8, 8)
+    // 使用MeshLambertMaterial支持emissive属性
+    const pointerMaterial = new THREE.MeshLambertMaterial({ 
+      color: pointerColor,
+      emissive: pointerColor,
+      emissiveIntensity: 0.6
+    })
+    
+    const blockMeshes = []
+    
+    displayBlocks.forEach((blockNum, index) => {
+      const y = (maxDisplayBlocks / 2 - index - 0.5) * verticalSpacing
+      
+      // 创建数据块（使用共享几何体和材质）
+      const blockMesh = new THREE.Mesh(blockGeometry, blockMaterial)
+      blockMesh.position.set(blockX, y, 0)
+      blockMesh.userData = { type: 'linkedBlock', blockNum, fileId: file.id }
+      this.indexVisualizationGroup.add(blockMesh)
+      this.indexBlocks.push(blockMesh)
+      blockMeshes.push({ mesh: blockMesh, x: blockX, y, blockNum })
+      
+      // 块编号标签（显示物理块号）
+      // 在链式分配中，blocks数组存储的是物理块号（磁盘上的实际位置）
+      // index是逻辑块号（文件内的顺序，从0开始），blockNum是物理块号
+      let physicalBlock = blockNum // blocks数组中的值就是物理块号
+      
+      // 如果extents存在，从extent验证物理块号（确保一致性）
+      if (file.extents && file.extents.length > 0 && this.disk?.blockSize) {
+        const blockSizeBytes = this.disk.blockSize
+        // 计算此逻辑块在文件中的字节偏移
+        const logicalByteOffset = index * blockSizeBytes
+        // 查找包含此逻辑偏移的extent
+        const extent = file.extents.find(e => {
+          return logicalByteOffset >= e.logicalOffset && 
+                 logicalByteOffset < e.logicalOffset + e.length
+        })
+        if (extent) {
+          // 从extent计算物理块号（验证blocks数组的值）
+          const offsetInExtent = logicalByteOffset - extent.logicalOffset
+          const physicalByteOffset = extent.physicalOffset + offsetInExtent
+          const calculatedPhysicalBlock = Math.floor(physicalByteOffset / blockSizeBytes)
+          // 使用从extent计算的物理块号（更准确，因为extent是真实的物理映射）
+          physicalBlock = calculatedPhysicalBlock
+        }
+      }
+      
+      // 显示格式：块#物理块号 物:物理块号
+      // 图片中显示"块#20 物:20"，表示这是物理块20
+      const blockInfo = `块#${physicalBlock}\n物:${physicalBlock}`
+      const blockLabel = this.createTextLabel(blockInfo, 0.4, '#ffffff')
+      blockLabel.position.set(blockX, y, blockSize * 0.6 + 0.25)
+      this.indexVisualizationGroup.add(blockLabel)
+      this.indexLabels.push(blockLabel)
+      
+      // 在块内部添加指针指示（显示指向下一个块，使用共享几何体和材质）
+      if (index < displayBlocks.length - 1) {
+        const pointer = new THREE.Mesh(pointerGeometry, pointerMaterial)
+        pointer.position.set(blockX + blockSize * 0.5, y, 0)
+        this.indexVisualizationGroup.add(pointer)
+        this.indexLines.push(pointer)
+        
+        // 指针标签（增大尺寸）
+        const pointerLabel = this.createTextLabel('→', 0.4, pointerColor)
+        pointerLabel.position.set(blockX + blockSize * 0.7, y, blockSize * 0.6 + 0.25)
+        this.indexVisualizationGroup.add(pointerLabel)
+        this.indexLabels.push(pointerLabel)
+      } else {
+        // 最后一个块显示NULL（增大尺寸）
+        const nullLabel = this.createTextLabel('NULL', 0.4, '#ff0000')
+        nullLabel.position.set(blockX + blockSize * 0.5, y, blockSize * 0.6 + 0.2)
+        this.indexVisualizationGroup.add(nullLabel)
+        this.indexLabels.push(nullLabel)
+      }
+      
+      // 连接线：当前块 -> 下一个块
+      if (index < displayBlocks.length - 1) {
+        const nextY = (maxDisplayBlocks / 2 - index - 1.5) * verticalSpacing
+        const lineGeometry = new THREE.BufferGeometry().setFromPoints([
+          new THREE.Vector3(blockX, y - blockSize * 0.6, 0),
+          new THREE.Vector3(blockX, nextY + blockSize * 0.6, 0)
+        ])
+        const lineMaterial = new THREE.LineBasicMaterial({ 
+          color: lineColor, 
+          linewidth: 4,
+          opacity: 0.8,
+          transparent: true
+        })
+        const line = new THREE.Line(lineGeometry, lineMaterial)
+        this.indexVisualizationGroup.add(line)
+        this.indexLines.push(line)
+        
+        // 添加箭头
+        const arrowY = (y + nextY) / 2
+        const arrowGeometry = new THREE.ConeGeometry(0.12, 0.3, 8)
+        const arrowMaterial = new THREE.MeshBasicMaterial({ color: lineColor })
+        const arrow = new THREE.Mesh(arrowGeometry, arrowMaterial)
+        arrow.position.set(blockX, arrowY, 0)
+        arrow.rotation.x = Math.PI / 2
+        this.indexVisualizationGroup.add(arrow)
+        this.indexLines.push(arrow)
+      }
+    })
+    
+    // 如果块数超过显示数量，添加省略号
+    if (blocks.length > maxDisplayBlocks) {
+      const ellipsisLabel = this.createTextLabel('...', 0.4, '#ffffff')
+      ellipsisLabel.position.set(blockX, -maxDisplayBlocks / 2 * verticalSpacing - 1, 0)
+      this.indexVisualizationGroup.add(ellipsisLabel)
+      this.indexLabels.push(ellipsisLabel)
+    }
+    
+    // 添加标题标签（增大尺寸）
+    const title = this.createTextLabel(
+      `链式分配：每个块包含指向下一个块的指针`,
+      0.7,
+      '#ffffff'
+    )
+    title.position.set(0, maxDisplayBlocks / 2 * verticalSpacing + 2, 0)
+    this.indexVisualizationGroup.add(title)
+    this.indexLabels.push(title)
+  }
+  
+  /**
+   * 可视化索引分配（一级索引 -> 直接块 -> 磁盘块）
+   */
+  visualizeIndexedAllocation(file, blocks, blockSize, spacing, blocksPerRow) {
+    const indexColor = 0xfbbc05 // 黄色 - 一级索引块
+    const directBlockColor = 0x4285f4 // 蓝色 - 直接块
+    const diskBlockColor = 0x34a853 // 绿色 - 磁盘块
+    const lineColor = 0xffffff // 白色连接线
+    
+    // 索引分配中：blocks[0]是索引块，blocks[1..n]是数据块
+    if (blocks.length === 0) {
+      return
+    }
+    
+    const indexBlockNum = blocks[0] // 第一个块是索引块
+    const dataBlocks = blocks.slice(1) // 其余块是数据块
+    
+    // 限制显示的数据块数量（性能优化）
+    const maxDisplayBlocks = Math.min(dataBlocks.length, 6)
+    const displayDataBlocks = dataBlocks.slice(0, maxDisplayBlocks)
+    
+    // 左侧：一级索引块
+    const indexBlockX = -6
+    const indexBlockY = 0
+    const indexBlockSize = blockSize * 1.5
+    
+    // 性能优化：共享几何体和材质
+    const indexGeometry = new THREE.BoxGeometry(indexBlockSize, indexBlockSize, indexBlockSize)
+    const indexMaterial = new THREE.MeshLambertMaterial({ 
+      color: indexColor,
+      emissive: indexColor,
+      emissiveIntensity: 0.5
+    })
+    const directGeometry = new THREE.BoxGeometry(blockSize * 1.2, blockSize * 1.2, blockSize * 1.2)
+    const directMaterial = new THREE.MeshLambertMaterial({ 
+      color: directBlockColor,
+      emissive: directBlockColor,
+      emissiveIntensity: 0.3
+    })
+    const diskGeometry = new THREE.BoxGeometry(blockSize, blockSize, blockSize)
+    const diskMaterial = new THREE.MeshLambertMaterial({ 
+      color: diskBlockColor,
+      emissive: diskBlockColor,
+      emissiveIntensity: 0.2
+    })
+    
+    // 创建一级索引块（blocks[0]）
+    const indexMesh = new THREE.Mesh(indexGeometry, indexMaterial)
+    indexMesh.position.set(indexBlockX, indexBlockY, 0)
+    indexMesh.userData = { type: 'indexBlock', isIndexBlock: true, blockNum: indexBlockNum, fileId: file.id }
+    this.indexVisualizationGroup.add(indexMesh)
+    this.indexBlocks.push(indexMesh)
+    
+    // 一级索引块标签（显示块号）
+    const indexLabel = this.createTextLabel(`一级索引\n块#${indexBlockNum}`, 0.5, '#000000')
+    indexLabel.position.set(indexBlockX, indexBlockY, indexBlockSize / 2 + 0.4)
+    this.indexVisualizationGroup.add(indexLabel)
+    this.indexLabels.push(indexLabel)
+    
+    // 中间：直接块，右侧：磁盘块
+    const directBlockX = -1.5
+    const diskBlockX = 3
+    const verticalSpacing = 1.2
+    
+    // 遍历数据块（blocks[1..n]），每个数据块对应一个直接块和一个磁盘块
+    displayDataBlocks.forEach((blockNum, index) => {
+      const y = (maxDisplayBlocks / 2 - index - 0.5) * verticalSpacing
+      
+      // 中间：创建直接块（使用共享几何体和材质）
+      const directMesh = new THREE.Mesh(directGeometry, directMaterial)
+      directMesh.position.set(directBlockX, y, 0)
+      directMesh.userData = { type: 'directBlock', blockNum, fileId: file.id }
+      this.indexVisualizationGroup.add(directMesh)
+      this.indexBlocks.push(directMesh)
+      
+      // 直接块标签（显示逻辑块号，数据块的逻辑索引是index+1）
+      const directLabel = this.createTextLabel(`直接块\n逻辑#${index + 1}`, 0.4, '#ffffff')
+      directLabel.position.set(directBlockX, y, blockSize * 0.6 + 0.25)
+      this.indexVisualizationGroup.add(directLabel)
+      this.indexLabels.push(directLabel)
+      
+      // 右侧：创建磁盘块（使用共享几何体和材质）
+      const diskMesh = new THREE.Mesh(diskGeometry, diskMaterial)
+      diskMesh.position.set(diskBlockX, y, 0)
+      diskMesh.userData = { type: 'diskBlock', blockNum, fileId: file.id }
+      this.indexVisualizationGroup.add(diskMesh)
+      this.indexBlocks.push(diskMesh)
+      
+      // 磁盘块标签（显示块号和物理地址）
+      // 注意：index是数据块在displayDataBlocks中的索引（从0开始）
+      // blocks[0]是索引块，blocks[1..n]是数据块
+      // 所以数据块在文件中的逻辑字节偏移 = (index + 1) * blockSize（跳过索引块）
+      let diskInfo = `块#${blockNum}`
+      if (file.extents && file.extents.length > 0 && this.disk?.blockSize) {
+        const blockSizeBytes = this.disk.blockSize
+        // 计算此数据块在文件中的字节偏移（跳过索引块，索引块不占用文件数据空间）
+        // 索引块只存储指针，不存储文件数据，所以数据块的逻辑偏移从0开始
+        const logicalByteOffset = index * blockSizeBytes
+        // 查找包含此逻辑偏移的extent
+        const extent = file.extents.find(e => {
+          return logicalByteOffset >= e.logicalOffset && 
+                 logicalByteOffset < e.logicalOffset + e.length
+        })
+        if (extent) {
+          // 计算物理块号
+          const offsetInExtent = logicalByteOffset - extent.logicalOffset
+          const physicalByteOffset = extent.physicalOffset + offsetInExtent
+          const physicalBlock = Math.floor(physicalByteOffset / blockSizeBytes)
+          diskInfo = `块#${blockNum}\n物:${physicalBlock}`
+        }
+      }
+      const diskLabel = this.createTextLabel(diskInfo, 0.4, '#ffffff')
+      diskLabel.position.set(diskBlockX, y, blockSize / 2 + 0.2)
+      this.indexVisualizationGroup.add(diskLabel)
+      this.indexLabels.push(diskLabel)
+      
+      // 连接线1：一级索引 -> 直接块（弧线）
+      const startPos1 = new THREE.Vector3(indexBlockX + indexBlockSize / 2, indexBlockY, 0)
+      const endPos1 = new THREE.Vector3(directBlockX - blockSize * 0.6, y, 0)
+      // 计算弧线的中间点（向上弯曲）
+      const midPoint1 = new THREE.Vector3(
+        (startPos1.x + endPos1.x) / 2, 
+        Math.max(startPos1.y, endPos1.y) + 1.5, // 向上弯曲
+        0
+      )
+      
+      // 创建弧线（使用二次贝塞尔曲线）
+      const arcPoints = []
+      const steps = 15 // 增加步数以获得更平滑的弧线
+      for (let i = 0; i <= steps; i++) {
+        const t = i / steps
+        // 二次贝塞尔曲线公式：B(t) = (1-t)²P₀ + 2(1-t)tP₁ + t²P₂
+        const arcX = (1 - t) * (1 - t) * startPos1.x + 2 * (1 - t) * t * midPoint1.x + t * t * endPos1.x
+        const arcY = (1 - t) * (1 - t) * startPos1.y + 2 * (1 - t) * t * midPoint1.y + t * t * endPos1.y
+        arcPoints.push(new THREE.Vector3(arcX, arcY, 0))
+      }
+      
+      // 在弧线中点添加箭头
+      const arcMidIndex = Math.floor(steps / 2)
+      const arcMidPoint = arcPoints[arcMidIndex]
+      const arcNextPoint = arcPoints[arcMidIndex + 1]
+      const arcDirection = new THREE.Vector3(arcNextPoint.x - arcMidPoint.x, arcNextPoint.y - arcMidPoint.y, 0).normalize()
+      const arcArrowGeometry = new THREE.ConeGeometry(0.1, 0.3, 8)
+      const arcArrowMaterial = new THREE.MeshBasicMaterial({ color: lineColor })
+      const arcArrow = new THREE.Mesh(arcArrowGeometry, arcArrowMaterial)
+      arcArrow.position.copy(arcMidPoint)
+      // 计算箭头朝向
+      const arcTargetPoint = arcMidPoint.clone().add(arcDirection)
+      arcArrow.lookAt(arcTargetPoint)
+      arcArrow.rotateX(Math.PI / 2)
+      this.indexVisualizationGroup.add(arcArrow)
+      this.indexLines.push(arcArrow)
+      
+      const arcGeometry = new THREE.BufferGeometry().setFromPoints(arcPoints)
+      const arcMaterial = new THREE.LineBasicMaterial({ 
+        color: lineColor, 
+        linewidth: 3,
+        opacity: 0.8,
+        transparent: true
+      })
+      const arcLine = new THREE.Line(arcGeometry, arcMaterial)
+      this.indexVisualizationGroup.add(arcLine)
+      this.indexLines.push(arcLine)
+      
+      // 连接线2：直接块 -> 磁盘块（直线）
+      const lineGeometry2 = new THREE.BufferGeometry().setFromPoints([
+        new THREE.Vector3(directBlockX + blockSize * 0.6, y, 0),
+        new THREE.Vector3(diskBlockX - blockSize / 2, y, 0)
+      ])
+      const lineMaterial2 = new THREE.LineBasicMaterial({ 
+        color: lineColor, 
+        linewidth: 3,
+        opacity: 0.8,
+        transparent: true
+      })
+      const line2 = new THREE.Line(lineGeometry2, lineMaterial2)
+      this.indexVisualizationGroup.add(line2)
+      this.indexLines.push(line2)
+      
+      // 添加箭头
+      const arrowX = (directBlockX + diskBlockX) / 2
+      const arrowGeometry = new THREE.ConeGeometry(0.1, 0.3, 8)
+      const arrowMaterial = new THREE.MeshBasicMaterial({ color: lineColor })
+      const arrow = new THREE.Mesh(arrowGeometry, arrowMaterial)
+      arrow.position.set(arrowX, y, 0)
+      arrow.rotation.z = -Math.PI / 2
+      this.indexVisualizationGroup.add(arrow)
+      this.indexLines.push(arrow)
+    })
+    
+    // 如果数据块数超过显示数量，添加省略号
+    if (dataBlocks.length > maxDisplayBlocks) {
+      const ellipsisLabel = this.createTextLabel('...', 0.4, '#ffffff')
+      ellipsisLabel.position.set(0, -maxDisplayBlocks / 2 * verticalSpacing - 1, 0)
+      this.indexVisualizationGroup.add(ellipsisLabel)
+      this.indexLabels.push(ellipsisLabel)
+    }
+    
+    // 添加标题标签（增大尺寸）
+    // 总块数 = 1个索引块 + N个数据块
+    const title = this.createTextLabel(
+      `索引分配（一级索引）：索引块#${indexBlockNum}，指向 ${dataBlocks.length} 个数据块`,
+      0.7,
+      '#ffffff'
+    )
+    title.position.set(0, maxDisplayBlocks / 2 * verticalSpacing + 2, 0)
+    this.indexVisualizationGroup.add(title)
+    this.indexLabels.push(title)
+  }
+  
+  /**
+   * 创建文本标签（优化版：更清晰的文字显示 + 性能优化）
+   */
+  createTextLabel(text, size, color) {
+    // 性能优化：使用缓存避免重复创建相同文字的标签
+    const cacheKey = `${text}_${size}_${color}`
+    if (!this.textLabelCache) {
+      this.textLabelCache = new Map()
+    }
+    if (this.textLabelCache.has(cacheKey)) {
+      // 返回缓存的mesh的克隆
+      const cachedMesh = this.textLabelCache.get(cacheKey)
+      return cachedMesh.clone()
+    }
+    
+    const canvas = document.createElement('canvas')
+    const context = canvas.getContext('2d')
+    
+    // 根据文字长度和大小动态调整canvas尺寸
+    const fontSize = Math.max(size * 32, 24) // 最小24px，确保清晰
+    const padding = 20
+    const lineHeight = fontSize * 1.2
+    
+    // 处理多行文本
+    const lines = text.split('\n')
+    const maxLines = Math.min(lines.length, 3) // 最多3行，避免过高
+    
+    // 设置字体（使用更清晰的字体）
+    context.font = `bold ${fontSize}px "Microsoft YaHei", "SimHei", Arial, sans-serif`
+    context.textAlign = 'center'
+    context.textBaseline = 'middle'
+    
+    // 测量文字宽度（取最宽的行）
+    let maxTextWidth = 0
+    lines.forEach(line => {
+      const textMetrics = context.measureText(line)
+      maxTextWidth = Math.max(maxTextWidth, textMetrics.width)
+    })
+    
+    // 设置canvas尺寸（根据文字宽度动态调整）
+    canvas.width = Math.max(maxTextWidth + padding * 2, 128)
+    canvas.height = (lineHeight * maxLines) + padding * 2
+    
+    // 启用文字平滑
+    context.textBaseline = 'middle'
+    context.textAlign = 'center'
+    
+    // 绘制背景（更不透明的背景，提高对比度）
+    context.fillStyle = 'rgba(0, 0, 0, 0.95)'
+    context.fillRect(0, 0, canvas.width, canvas.height)
+    
+    // 添加边框（提高可读性）
+    context.strokeStyle = 'rgba(255, 255, 255, 0.3)'
+    context.lineWidth = 2
+    context.strokeRect(1, 1, canvas.width - 2, canvas.height - 2)
+    
+    // 绘制每行文字
+    lines.slice(0, maxLines).forEach((line, lineIndex) => {
+      const y = padding + lineHeight / 2 + lineIndex * lineHeight
+      
+      // 绘制文字描边（黑色描边，提高在深色背景下的可读性）
+      context.strokeStyle = 'rgba(0, 0, 0, 0.8)'
+      context.lineWidth = 4
+      context.lineJoin = 'round'
+      context.miterLimit = 2
+      context.strokeText(line, canvas.width / 2, y)
+      
+      // 绘制文字填充
+      context.fillStyle = color
+      context.fillText(line, canvas.width / 2, y)
+    })
+    
+    // 创建纹理（启用高质量渲染）
+    const texture = new THREE.CanvasTexture(canvas)
+    texture.minFilter = THREE.LinearFilter
+    texture.magFilter = THREE.LinearFilter
+    texture.generateMipmaps = false // 禁用mipmap以提高清晰度
+    
+    const material = new THREE.MeshBasicMaterial({ 
+      map: texture, 
+      transparent: true,
+      alphaTest: 0.1 // 提高透明度阈值，减少边缘模糊
+    })
+    
+    // 根据实际canvas尺寸计算几何体大小
+    const aspectRatio = canvas.width / canvas.height
+    const geometryHeight = size * 1.5 * maxLines // 根据行数调整高度
+    const geometryWidth = geometryHeight * aspectRatio
+    
+    const geometry = new THREE.PlaneGeometry(geometryWidth, geometryHeight)
+    const mesh = new THREE.Mesh(geometry, material)
+    
+    // 缓存mesh（但不缓存材质和纹理，因为会被克隆）
+    this.textLabelCache.set(cacheKey, mesh)
+    
+    // 注意：不要覆盖 lookAt 方法，在 animate 方法中直接调用原生的 lookAt
+    // 原生的 lookAt 方法会在 animate 循环中被调用
+    
+    return mesh
+  }
+  
+  /**
+   * 创建索引信息面板
+   */
+  createIndexInfoPanel(file) {
+    // 移除旧的面板
+    if (this.indexInfoPanel) {
+      if (this.indexVisualizationGroup) {
+        this.indexVisualizationGroup.remove(this.indexInfoPanel)
+      }
+      // 清理旧面板的资源
+      if (this.indexInfoPanel.geometry) {
+        this.indexInfoPanel.geometry.dispose()
+      }
+      if (this.indexInfoPanel.material) {
+        if (this.indexInfoPanel.material.map) {
+          this.indexInfoPanel.material.map.dispose()
+        }
+        this.indexInfoPanel.material.dispose()
+      }
+    }
+    
+    // 创建信息文本（包含物理地址信息）
+    let extentInfo = ''
+    if (file.extents && file.extents.length > 0) {
+      const blockSizeBytes = this.disk?.blockSize || 4096
+      extentInfo = `\nExtent映射（${file.extents.length}个）：\n`
+      file.extents.slice(0, 5).forEach((extent, idx) => {
+        // 计算逻辑块范围
+        const logicalBlockStart = Math.floor(extent.logicalOffset / blockSizeBytes)
+        const logicalBlockEnd = Math.floor((extent.logicalOffset + extent.length - 1) / blockSizeBytes)
+        // 计算物理块范围
+        const physicalBlockStart = Math.floor(extent.physicalOffset / blockSizeBytes)
+        const physicalBlockEnd = Math.floor((extent.physicalOffset + extent.length - 1) / blockSizeBytes)
+        
+        // 格式化显示
+        const logicalRange = logicalBlockStart === logicalBlockEnd 
+          ? `块#${logicalBlockStart}` 
+          : `块#${logicalBlockStart}-${logicalBlockEnd}`
+        const physicalRange = physicalBlockStart === physicalBlockEnd 
+          ? `块#${physicalBlockStart}` 
+          : `块#${physicalBlockStart}-${physicalBlockEnd}`
+        
+        extentInfo += `  [${idx + 1}] 逻辑${logicalRange} → 物理${physicalRange}\n`
+        extentInfo += `      偏移: ${extent.logicalOffset}B → ${extent.physicalOffset}B (${extent.length}B)\n`
+      })
+      if (file.extents.length > 5) {
+        extentInfo += `  ... 还有${file.extents.length - 5}个extent\n`
+      }
+    } else {
+      extentInfo = '\nExtent映射：无（未获取到物理地址信息）\n'
+    }
+    
+    const infoText = `
+文件ID：${file.id}
+名称：${file.name}
+设备ID：${file.deviceId || '未知'}
+Inode：${file.inode || '未知'}
+分配算法：${file.allocationAlgorithm || '未知'}
+块数量：${file.blocks ? file.blocks.length : 0}
+大小：${file.size} 字节
+创建时间：${file.createTime || '未知'}
+物理路径：${file.physicalPath ? (file.physicalPath.length > 50 ? file.physicalPath.substring(0, 50) + '...' : file.physicalPath) : '未知'}${extentInfo}
+    `.trim()
+    
+    // 根据文本内容动态调整面板大小
+    const lines = infoText.split('\n').filter(line => line.trim())
+    const fontSize = 28 // 稍微减小字体，确保内容能完整显示
+    const lineHeight = fontSize * 1.4
+    const padding = 30
+    const textHeight = lines.length * lineHeight + padding * 2
+    const textWidth = 700 // 固定宽度，确保文本不会太宽
+    
+    // 计算面板尺寸（根据文本内容，使用更合理的比例）
+    // canvas尺寸会影响纹理显示，面板尺寸需要与canvas成比例
+    const canvasScale = 256 // canvas到3D空间的缩放比例
+    const panelWidth = Math.max(3, textWidth / canvasScale)
+    const panelHeight = Math.max(4, textHeight / canvasScale)
+    
+    const panelGeometry = new THREE.PlaneGeometry(panelWidth, panelHeight)
+    // 创建材质，稍后应用纹理
+    const panelMaterial = new THREE.MeshBasicMaterial({ 
+      color: 0xffffff,
+      opacity: 0.95, 
+      transparent: true,
+      side: THREE.DoubleSide // 双面渲染
+    })
+    this.indexInfoPanel = new THREE.Mesh(panelGeometry, panelMaterial)
+    
+    // 固定面板位置和朝向（不旋转）
+    // 位置：右侧，稍微上移，稍微靠前
+    this.indexInfoPanel.position.set(6, 2, 0)
+    // 固定朝向：朝向Z轴负方向（从相机看是正面）
+    // PlaneGeometry默认朝向Z轴负方向，canvas已翻转，所以不需要旋转
+    this.indexInfoPanel.rotation.set(0, 0, 0)
+    
+    // 根据文本内容计算canvas尺寸
+    const canvasPadding = 40
+    const canvasWidth = Math.max(800, textWidth + canvasPadding * 2)
+    const canvasHeight = Math.max(600, textHeight + canvasPadding * 2)
+    
+    const canvas = document.createElement('canvas')
+    const context = canvas.getContext('2d')
+    canvas.width = canvasWidth
+    canvas.height = canvasHeight
+    
+    // 绘制背景（更不透明，提高对比度）
+    context.fillStyle = 'rgba(0, 0, 0, 0.95)'
+    context.fillRect(0, 0, canvas.width, canvas.height)
+    
+    // 添加边框
+    context.strokeStyle = 'rgba(255, 255, 255, 0.5)'
+    context.lineWidth = 4
+    context.strokeRect(2, 2, canvas.width - 4, canvas.height - 4)
+    
+    // 设置字体（更大更清晰，使用上面计算的fontSize）
+    context.font = `bold ${fontSize}px "Microsoft YaHei", "SimHei", Arial, sans-serif`
+    context.textAlign = 'left'
+    context.textBaseline = 'top'
+    
+    // 使用上面计算的lineHeight和padding
+    const startY = canvasPadding
+    
+    // 绘制文本到临时canvas
+    lines.forEach((line, index) => {
+      const y = startY + index * lineHeight
+      
+      // 确保文本在canvas范围内
+      if (y + lineHeight > canvas.height - canvasPadding) {
+        return // 超出范围，不绘制
+      }
+      
+      // 绘制文字描边（提高可读性）
+      context.strokeStyle = 'rgba(0, 0, 0, 0.8)'
+      context.lineWidth = 6
+      context.lineJoin = 'round'
+      context.miterLimit = 2
+      context.strokeText(line, canvasPadding, y)
+      
+      // 绘制文字填充
+      context.fillStyle = '#ffffff'
+      context.fillText(line, canvasPadding, y)
+    })
+    
+    // 水平翻转canvas内容以修复镜像问题
+    const flippedCanvas = document.createElement('canvas')
+    flippedCanvas.width = canvas.width
+    flippedCanvas.height = canvas.height
+    const flippedContext = flippedCanvas.getContext('2d')
+    // 水平翻转：先平移，再缩放
+    flippedContext.translate(canvas.width, 0)
+    flippedContext.scale(-1, 1)
+    flippedContext.drawImage(canvas, 0, 0)
+    
+    // 再次水平翻转（修复镜像问题）
+    const finalCanvas = document.createElement('canvas')
+    finalCanvas.width = flippedCanvas.width
+    finalCanvas.height = flippedCanvas.height
+    const finalContext = finalCanvas.getContext('2d')
+    // 再次水平翻转
+    finalContext.translate(finalCanvas.width, 0)
+    finalContext.scale(-1, 1)
+    finalContext.drawImage(flippedCanvas, 0, 0)
+    
+    // 调试：验证canvas内容
+    console.log('Canvas绘制完成（已翻转）:', {
+      width: canvas.width,
+      height: canvas.height,
+      lines: lines.length,
+      firstLine: lines[0] || '无内容'
+    })
+    
+    // 创建纹理（使用最终翻转后的canvas）
+    const texture = new THREE.CanvasTexture(finalCanvas)
+    texture.minFilter = THREE.LinearFilter
+    texture.magFilter = THREE.LinearFilter
+    texture.generateMipmaps = false
+    texture.flipY = true // Canvas纹理需要flipY=true以正确显示
+    texture.needsUpdate = true // 确保纹理更新
+    
+    // 应用纹理到材质
+    panelMaterial.map = texture
+    panelMaterial.color.setHex(0xffffff) // 白色，确保纹理正确显示
+    panelMaterial.needsUpdate = true
+    
+    // 更新材质
+    this.indexInfoPanel.material = panelMaterial
+    
+    // 确保面板可见性
+    this.indexInfoPanel.visible = true
+    this.indexInfoPanel.renderOrder = 1000 // 确保面板在其他对象之上渲染
+    
+    // 添加到可视化组
+    if (this.indexVisualizationGroup) {
+      this.indexVisualizationGroup.add(this.indexInfoPanel)
+    } else {
+      console.warn('indexVisualizationGroup is null, cannot add info panel')
+      // 如果组不存在，直接添加到场景
+      if (this.scene) {
+        this.scene.add(this.indexInfoPanel)
+      }
+    }
+    
+    // 面板固定位置和朝向，不需要旋转
+    console.log('信息面板已创建（固定位置）:', {
+      position: this.indexInfoPanel.position,
+      rotation: this.indexInfoPanel.rotation,
+      visible: this.indexInfoPanel.visible,
+      hasTexture: !!panelMaterial.map
+    })
+    
+    // 调试：输出面板信息
+    console.log('信息面板已创建:', {
+      position: this.indexInfoPanel.position,
+      visible: this.indexInfoPanel.visible,
+      hasTexture: !!panelMaterial.map,
+      textureSize: canvas.width + 'x' + canvas.height,
+      textLines: lines.length
+    })
+  }
+  
+  /**
+   * 调整相机位置以适应索引可视化
+   */
+  adjustCameraForIndex(blockCount, blocksPerRow) {
+    // 新的布局是垂直排列，需要从正面观察
+    const maxDisplayBlocks = Math.min(blockCount, 10)
+    const verticalHeight = maxDisplayBlocks * 1.5 // 垂直高度
+    const horizontalWidth = 12 // 水平宽度（从左到右）
+    
+    // 根据内容大小调整距离
+    const distance = Math.max(verticalHeight, horizontalWidth) * 1.5
+    const distanceZ = Math.max(distance, 15)
+    
+    // 设置相机位置（从正面斜上方观察，能看到左右布局）
+    this.camera.position.set(0, distance * 0.3, distanceZ)
+    this.camera.lookAt(0, 0, 0)
+    
+    if (this.controls) {
+      this.controls.target.set(0, 0, 0)
+      this.controls.update()
+    }
+  }
+  
+  /**
+   * 清除索引可视化
+   */
+  clearIndexVisualization() {
+    if (this.indexVisualizationGroup) {
+      this.scene.remove(this.indexVisualizationGroup)
+      // 清理资源
+      this.indexBlocks.forEach(block => {
+        if (block.geometry) block.geometry.dispose()
+        if (block.material) {
+          if (Array.isArray(block.material)) {
+            block.material.forEach(mat => mat.dispose())
+          } else {
+            block.material.dispose()
+          }
+        }
+      })
+      this.indexLines.forEach(line => {
+        if (line.geometry) line.geometry.dispose()
+        if (line.material) {
+          if (Array.isArray(line.material)) {
+            line.material.forEach(mat => mat.dispose())
+          } else {
+            line.material.dispose()
+          }
+        }
+      })
+      // 清理标签（注意：缓存的标签会被其他实例共享，所以只清理材质和纹理，不清理几何体）
+      this.indexLabels.forEach(label => {
+        if (label.material) {
+          // 检查是否是缓存的标签（通过检查是否有userData标记）
+          if (!label.userData.isCached) {
+            if (label.material.map) label.material.map.dispose()
+            label.material.dispose()
+            if (label.geometry) label.geometry.dispose()
+          }
+        }
+      })
+      if (this.indexInfoPanel) {
+        if (this.indexInfoPanel.geometry) this.indexInfoPanel.geometry.dispose()
+        if (this.indexInfoPanel.material) {
+          if (this.indexInfoPanel.material.map) this.indexInfoPanel.material.map.dispose()
+          this.indexInfoPanel.material.dispose()
+        }
+      }
+    }
+    
+    this.indexVisualizationGroup = null
+    this.indexBlocks = []
+    this.indexLines = []
+    this.indexLabels = []
+    this.indexInfoPanel = null
+  }
+  
+  /**
    * 销毁渲染器
    */
   dispose() {
+    this.clearIndexVisualization()
     if (this.renderer) {
       this.renderer.dispose()
       this.container.removeChild(this.renderer.domElement)
