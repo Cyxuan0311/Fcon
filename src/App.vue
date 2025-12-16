@@ -1,75 +1,104 @@
 <template>
-  <div class="w-full h-full flex" style="overflow: hidden;">
-    <!-- 左侧操作面板 -->
-    <div 
-      ref="operationPanelRef"
-      class="h-full relative flex-shrink-0"
-      :style="{ width: operationPanelWidth + 'px', minWidth: '200px', maxWidth: operationPanelMaxWidth + 'px' }"
-    >
-      <OperationPanel />
-    </div>
+  <div class="w-full h-full flex flex-col" style="overflow: hidden;">
+    <!-- 标题栏 -->
+    <header class="app-header">
+      <div class="header-content">
+        <div class="header-left">
+          <div class="logo-section">
+            <span class="logo-icon">🗂️</span>
+            <div class="logo-text">
+              <h1 class="app-title">Fcon Viewer</h1>
+              <p class="app-subtitle">文件系统可视化工具</p>
+            </div>
+          </div>
+        </div>
+        <div class="header-right">
+          <a 
+            href="https://github.com/Cyxuan0311/Fcon.git" 
+            target="_blank" 
+            rel="noopener noreferrer"
+            class="github-link"
+            title="查看 GitHub 仓库"
+          >
+            <GithubOutlined />
+          </a>
+        </div>
+      </div>
+    </header>
     
-    <!-- 操作面板可拖拽的分隔条 -->
-    <div
-      ref="operationResizerRef"
-      class="resizer"
-      :class="{ dragging: isResizingOperation }"
-      @mousedown="startResizeOperation"
-      title="拖拽调整操作面板宽度"
-    ></div>
-    
-    <!-- 中间3D可视化区域 -->
-    <div class="flex-1 relative" style="min-width: 0; width: 0;">
-      <ThreeDVisualization />
-      <GuideModule :show="showGuide" @close="closeGuide" />
-      <!-- 功能按钮组 -->
-      <div v-if="!showGuide" class="absolute top-4 right-4 flex gap-2 z-40">
-        <!-- 终端按钮 -->
-        <Button 
-          @click="showTerminal = true"
-          :icon="h(ConsoleSqlOutlined)"
-          title="打开终端"
-        >
-          终端
-        </Button>
-        <!-- 引导按钮 -->
-        <Button 
-          @click="showGuide = true"
-          type="primary"
-          :icon="h(BookOutlined)"
-          title="显示教学引导"
-        >
-          教学引导
-        </Button>
+    <!-- 主内容区域 -->
+    <div class="flex-1 flex" style="overflow: hidden; min-height: 0;">
+      <!-- 左侧操作面板 -->
+      <div 
+        ref="operationPanelRef"
+        class="h-full relative flex-shrink-0"
+        :style="{ width: operationPanelWidth + 'px', minWidth: '200px', maxWidth: operationPanelMaxWidth + 'px' }"
+      >
+        <OperationPanel />
       </div>
       
-      <!-- 终端窗口 -->
-      <TerminalWindow :show="showTerminal" @close="showTerminal = false" />
-    </div>
-    
-    <!-- 数据面板可拖拽的分隔条 -->
-    <div
-      ref="dataResizerRef"
-      class="resizer"
-      :class="{ dragging: isResizingData }"
-      @mousedown="startResizeData"
-      title="拖拽调整数据面板宽度"
-    ></div>
-    
-    <!-- 右侧数据面板 -->
-    <div 
-      ref="dataPanelRef"
-      class="h-full relative flex-shrink-0"
-      :style="{ width: dataPanelWidth + 'px', minWidth: '150px', maxWidth: dataPanelMaxWidth + 'px' }"
-    >
-      <DataPanel />
+      <!-- 操作面板可拖拽的分隔条 -->
+      <div
+        ref="operationResizerRef"
+        class="resizer"
+        :class="{ dragging: isResizingOperation }"
+        @mousedown="startResizeOperation"
+        title="拖拽调整操作面板宽度"
+      ></div>
+      
+      <!-- 中间3D可视化区域 -->
+      <div class="flex-1 relative" style="min-width: 0; width: 0;">
+        <ThreeDVisualization :show-terminal="showTerminal" />
+        <GuideModule :show="showGuide" @close="closeGuide" />
+        <!-- 功能按钮组 -->
+        <div v-if="!showGuide" class="absolute top-4 right-4 flex gap-2 z-40">
+          <!-- 终端按钮 -->
+          <Button 
+            @click="showTerminal = true"
+            :icon="h(ConsoleSqlOutlined)"
+            title="打开终端"
+          >
+            终端
+          </Button>
+          <!-- 引导按钮 -->
+          <Button 
+            @click="showGuide = true"
+            type="primary"
+            :icon="h(BookOutlined)"
+            title="显示教学引导"
+          >
+            教学引导
+          </Button>
+        </div>
+        
+        <!-- 终端窗口 -->
+        <TerminalWindow :show="showTerminal" @close="showTerminal = false" />
+      </div>
+      
+      <!-- 数据面板可拖拽的分隔条 -->
+      <div
+        ref="dataResizerRef"
+        class="resizer"
+        :class="{ dragging: isResizingData }"
+        @mousedown="startResizeData"
+        title="拖拽调整数据面板宽度"
+      ></div>
+      
+      <!-- 右侧数据面板 -->
+      <div 
+        ref="dataPanelRef"
+        class="h-full relative flex-shrink-0"
+        :style="{ width: dataPanelWidth + 'px', minWidth: '150px', maxWidth: dataPanelMaxWidth + 'px' }"
+      >
+        <DataPanel />
+      </div>
     </div>
   </div>
 </template>
 
 <script setup>
 import { ref, onMounted, onUnmounted, h } from 'vue'
-import { ConsoleSqlOutlined, BookOutlined } from '@ant-design/icons-vue'
+import { ConsoleSqlOutlined, BookOutlined, GithubOutlined } from '@ant-design/icons-vue'
 import { Button } from 'ant-design-vue'
 import OperationPanel from './components/layout/OperationPanel.vue'
 import ThreeDVisualization from './components/layout/ThreeDVisualization.vue'
@@ -297,6 +326,127 @@ const closeGuide = () => {
 /* 拖拽时的视觉反馈 */
 .resizer.dragging {
   background-color: #2563eb;
+}
+
+/* 标题栏样式 */
+.app-header {
+  height: 64px;
+  background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  flex-shrink: 0;
+  z-index: 100;
+}
+
+.header-content {
+  height: 100%;
+  max-width: 100%;
+  margin: 0 auto;
+  padding: 0 1.5rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.header-left {
+  display: flex;
+  align-items: center;
+}
+
+.logo-section {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.logo-icon {
+  font-size: 2rem;
+  line-height: 1;
+  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.3));
+}
+
+.logo-text {
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+}
+
+.app-title {
+  margin: 0;
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: #ffffff;
+  letter-spacing: -0.025em;
+  line-height: 1.2;
+}
+
+.app-subtitle {
+  margin: 0;
+  font-size: 0.75rem;
+  color: rgba(255, 255, 255, 0.6);
+  font-weight: 400;
+  line-height: 1.2;
+}
+
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.github-link {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  color: rgba(255, 255, 255, 0.7);
+  font-size: 1.5rem;
+  transition: all 0.3s;
+  border-radius: 6px;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.github-link:hover {
+  color: rgba(255, 255, 255, 1);
+  background-color: rgba(255, 255, 255, 0.1);
+  transform: scale(1.1);
+}
+
+.github-link .anticon {
+  font-size: 1.5rem;
+}
+
+/* 响应式设计 */
+@media (max-width: 768px) {
+  .app-header {
+    height: 56px;
+  }
+  
+  .header-content {
+    padding: 0 1rem;
+  }
+  
+  .logo-icon {
+    font-size: 1.5rem;
+  }
+  
+  .app-title {
+    font-size: 1rem;
+  }
+  
+  .app-subtitle {
+    font-size: 0.6875rem;
+  }
+  
+  .header-info {
+    gap: 1rem;
+  }
+  
+  .info-item span:not(.anticon) {
+    display: none;
+  }
 }
 </style>
 
