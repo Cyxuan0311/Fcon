@@ -25,6 +25,8 @@ dist-ssr
 
 
 node_modules/
+build/
 
 功能实现总结.md
 项目文档.md
+filesystem.json
