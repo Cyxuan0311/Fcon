@@ -21,6 +21,19 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
   // 文件系统核心实例
   let fileSystemCore = null
   
+  // 初始化fileSystemCore（如果需要）
+  const ensureFileSystemCore = () => {
+    if (!fileSystemCore) {
+      if (disk.value.totalBlocks > 0) {
+        fileSystemCore = new FileSystemCore(fileSystemType.value, disk.value)
+      } else {
+        // 即使没有初始化磁盘，也创建一个实例以便获取文件列表
+        fileSystemCore = new FileSystemCore(fileSystemType.value, disk.value)
+      }
+    }
+    return fileSystemCore
+  }
+  
   // 当前选中的文件/目录
   const selectedItem = ref(null)
   
@@ -130,6 +143,7 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
   
   // 获取目录下的文件
   const getFilesByParent = (parentId = 'root') => {
+    ensureFileSystemCore()
     if (!fileSystemCore) {
       return []
     }
