@@ -456,11 +456,12 @@ watch(
   () => fileSystemStore.files,
   (newFiles, oldFiles) => {
     if (renderer) {
-      // 只在树视图下才创建/更新文件结构树
-      if (currentView.value === 'tree' && newFiles.length > 0) {
+      // 树视图：任何新增/删除/重命名/移动都要实时重建树（包括变为空树时清空旧树）
+      if (currentView.value === 'tree') {
         renderer.createFileStructureTree(newFiles)
+        renderer.showTreeView()
       } else {
-        // 如果在磁盘视图下，确保文件结构树被隐藏
+        // 非树视图：确保树被隐藏（但不强制重建，避免多余开销）
         if (renderer.fileStructureTree) {
           renderer.fileStructureTree.visible = false
         }
@@ -547,6 +548,11 @@ watch(
 watch(
   () => currentView.value,
   (newView) => {
+    // 进入结构(tab=tree)时，确保立刻按最新文件列表渲染一次（避免刚刚删除/新增后未及时显示）
+    if (renderer && newView === 'tree') {
+      renderer.createFileStructureTree(fileSystemStore.files)
+      renderer.showTreeView()
+    }
     if (newView === 'index' && !props.showTerminal) {
       // 延迟聚焦，确保DOM已更新
       nextTick(() => {
