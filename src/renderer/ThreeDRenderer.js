@@ -25,7 +25,12 @@ export class ThreeDRenderer {
     this.hoveredBlock = null // 当前悬停的块
     this.highlightedBlocks = new Set() // 当前高亮（浮起）的块集合
     this.gridSize = 0 // 保存网格大小，用于优化上浮动画
-    this.spacing = 1.15 // 保存块间距
+    this.spacing = 1.25 // 保存块间距（统一由布局函数维护）
+    this.diskLayout = {
+      blockSizeXZ: 0.9, // 磁盘块在 X/Z 方向的尺寸（需要小于 spacing 才会有明显缝隙）
+      blockSizeY: 0.6,
+      spacing: 1.25
+    }
     this.activeAnimations = new Map() // 跟踪每个块的活跃动画，防止被重置
     this.fileStructureTree = null // 文件结构树组
     this.fileStructureNodes = new Map() // 文件结构节点映射
@@ -188,7 +193,7 @@ export class ThreeDRenderer {
     }
     
     this.gridSize = Math.ceil(Math.sqrt(totalBlocks))
-    this.spacing = 1.15 // 稍微减小间距，让块更紧凑
+    this.spacing = this.diskLayout.spacing
     const gridSize = this.gridSize
     const spacing = this.spacing
     
@@ -197,8 +202,15 @@ export class ThreeDRenderer {
       const row = Math.floor(i / gridSize)
       const col = i % gridSize
       
-      // 使用圆角盒子几何体（通过增加分段数模拟圆角效果）
-      const geometry = new THREE.BoxGeometry(0.95, 0.6, 0.95, 2, 2, 2)
+      // 使用盒子几何体（尺寸 < spacing，确保块之间始终有缝隙）
+      const geometry = new THREE.BoxGeometry(
+        this.diskLayout.blockSizeXZ,
+        this.diskLayout.blockSizeY,
+        this.diskLayout.blockSizeXZ,
+        2,
+        2,
+        2
+      )
       
       // 优化材质效果
       const blockColor = this.getBlockColor(disk, i)
@@ -213,11 +225,7 @@ export class ThreeDRenderer {
       })
       
       const block = new THREE.Mesh(geometry, material)
-      block.position.set(
-        (col - gridSize / 2) * spacing,
-        0.3, // 稍微抬高，让块浮起来
-        (row - gridSize / 2) * spacing
-      )
+      block.position.set((col - gridSize / 2) * spacing, 0.3, (row - gridSize / 2) * spacing)
       
       // 添加轻微的随机旋转，让视觉效果更自然
       block.rotation.y = (Math.random() - 0.5) * 0.1
@@ -231,7 +239,8 @@ export class ThreeDRenderer {
       block.userData = { 
         blockNumber: i, 
         type: 'diskBlock',
-        file: file || null
+        file: file || null,
+        baseScale: 1 // 记录基础缩放，避免悬停/动画叠加导致“越悬停越小/忽大忽小”
       }
       
       this.scene.add(block)
@@ -240,6 +249,62 @@ export class ThreeDRenderer {
     
     // 保存磁盘引用
     this.disk = disk
+    
+    // 新建/重建后，归一化一次，避免重配/删除/创建链路残留动画导致部分块尺寸不一致
+    this.normalizeDiskBlockTransforms()
+  }
+  
+  /**
+   * 重新布局磁盘块（修复删除/重配/新建后块挤在一起的问题）
+   * - 强制恢复统一 spacing
+   * - 重新计算每个块的 x/z 位置
+   */
+  layoutDiskBlocks(disk = this.disk) {
+    if (!disk || !this.diskBlocks || this.diskBlocks.length === 0) return
+    
+    const totalBlocks = disk.totalBlocks || this.diskBlocks.length
+    if (totalBlocks <= 0) return
+    
+    this.gridSize = Math.ceil(Math.sqrt(totalBlocks))
+    this.spacing = this.diskLayout.spacing
+    
+    const gridSize = this.gridSize
+    const spacing = this.spacing
+    
+    for (let i = 0; i < Math.min(totalBlocks, this.diskBlocks.length); i++) {
+      const block = this.diskBlocks[i]
+      if (!block) continue
+      const row = Math.floor(i / gridSize)
+      const col = i % gridSize
+      block.position.x = (col - gridSize / 2) * spacing
+      block.position.z = (row - gridSize / 2) * spacing
+    }
+  }
+  
+  /**
+   * 归一化磁盘块变换状态：
+   * - kill position/scale 的残留 tween（重配/删除/创建时常见）
+   * - 非高亮块恢复到统一的 baseScale 与初始高度
+   */
+  normalizeDiskBlockTransforms() {
+    if (!this.diskBlocks || this.diskBlocks.length === 0) return
+    
+    this.diskBlocks.forEach((block) => {
+      if (!block) return
+      
+      gsap.killTweensOf(block.scale)
+      gsap.killTweensOf(block.position)
+      
+      const baseScale = (block.userData && typeof block.userData.baseScale === 'number')
+        ? block.userData.baseScale
+        : 1
+      const isHighlighted = this.highlightedBlocks && this.highlightedBlocks.has(block)
+      
+      if (!isHighlighted) {
+        block.scale.set(baseScale, baseScale, baseScale)
+        block.position.y = 0.3
+      }
+    })
   }
 
   
@@ -251,7 +316,7 @@ export class ThreeDRenderer {
     if (!this.camera || !disk || disk.totalBlocks === 0) return
     
     const gridSize = Math.ceil(Math.sqrt(disk.totalBlocks))
-    const spacing = 1.2
+    const spacing = this.spacing || this.diskLayout.spacing || 1.25
     const maxDimension = Math.max(gridSize * spacing, 10)
     
     // 根据磁盘大小调整相机距离
@@ -354,6 +419,12 @@ export class ThreeDRenderer {
         block.userData.file = file || null
       }
     })
+    
+    // 关键：任何状态更新后都强制重新布局，避免块“堆在一起”看起来没有间距
+    this.layoutDiskBlocks(disk)
+    
+    // 关键：重配/删除/创建后常有残留缩放 tween，统一归一化，避免悬停时出现“触摸块比旁边小”
+    this.normalizeDiskBlockTransforms()
   }
   
   /**
@@ -782,17 +853,35 @@ export class ThreeDRenderer {
       })
     }
     
-    // 将对应的块置灰（设置为空闲块颜色，确保和空闲块完全一致）
+    // 将对应的块置灰（彻底复位：颜色/发光/动画/高亮状态都回到空闲块初始状态）
     const freeBlockColor = 0x3a4a5c // 空闲块颜色，与 getBlockColor 中的定义一致
     blocksToGray.forEach(blockNum => {
       const block = this.diskBlocks[blockNum]
       if (block && block.material) {
+        // 如果该块正在高亮/动画中，先停止并移除状态，避免残留 emissive/缩放/位置
+        if (block.userData && block.userData.highlightAnimations) {
+          const anims = block.userData.highlightAnimations
+          if (anims.position) anims.position.kill()
+          if (anims.scale) anims.scale.kill()
+          if (anims.emissive) anims.emissive.kill()
+          if (anims.material) anims.material.kill()
+          delete block.userData.highlightAnimations
+        }
+        this.activeAnimations.delete(block)
+        if (this.highlightedBlocks) {
+          this.highlightedBlocks.delete(block)
+        }
+
         // 立即置灰，不使用动画，确保颜色和空闲块完全一致
         block.material.color.setHex(freeBlockColor)
         // 重置位置和缩放
         block.position.y = 0.3
         block.scale.set(1, 1, 1)
         // 重置材质属性，确保和空闲块完全一致
+        // 关键：重置 emissive 颜色，避免残留“原文件颜色的微弱发光”，导致看起来只是灰了一点
+        if (block.material.emissive) {
+          block.material.emissive = new THREE.Color(freeBlockColor).multiplyScalar(0.1)
+        }
         block.material.emissiveIntensity = 0.1
         block.material.metalness = 0.3
         block.material.roughness = 0.4
@@ -834,6 +923,10 @@ export class ThreeDRenderer {
     const freeBlockColor = 0x3a4a5c // 空闲块颜色，与 getBlockColor 中的定义一致
     this.diskBlocks.forEach((block) => {
       if (!block) return
+      
+      // 杀掉残留 tween，避免后续悬停出现“块大小不一致”
+      gsap.killTweensOf(block.scale)
+      gsap.killTweensOf(block.position)
       
       // 立即置灰，确保颜色和空闲块完全一致
       if (block.material) {
@@ -1465,6 +1558,22 @@ export class ThreeDRenderer {
   hoverBlock(block, highlight) {
     if (!block) return
     
+    // 统一使用基础缩放作为“复位基准”，避免被其他动画污染后悬停反而缩小
+    const baseScale = (block.userData && typeof block.userData.baseScale === 'number')
+      ? block.userData.baseScale
+      : 1
+    
+    // 避免悬停缩放与其它 scale 动画（脉冲/重置/高亮）打架，先清掉当前块的缩放 tween
+    gsap.killTweensOf(block.scale)
+    
+    // 兜底：无论任何残留动画如何修改 scale，都不允许小于基础缩放，避免出现“悬停后反而变小”
+    const clampedX = Math.max(block.scale.x || 1, baseScale)
+    const clampedY = Math.max(block.scale.y || 1, baseScale)
+    const clampedZ = Math.max(block.scale.z || 1, baseScale)
+    if (clampedX !== block.scale.x || clampedY !== block.scale.y || clampedZ !== block.scale.z) {
+      block.scale.set(clampedX, clampedY, clampedZ)
+    }
+    
     // 检查块是否是被高亮（浮起）的块
     const isHighlightedBlock = this.highlightedBlocks.has(block)
     
@@ -1494,13 +1603,17 @@ export class ThreeDRenderer {
     if (highlight) {
       // 高亮：放大并添加发光效果
       // 如果已经是高亮块，保持更大的缩放
-      const targetScale = isHighlightedBlock ? 1.25 : 1.15
+      // 重要：不要把原本已经更大的块“缩小”到 hover 的目标值（用户会感觉悬停反而变小）
+      const desiredScale = baseScale * (isHighlightedBlock ? 1.25 : 1.15)
+      const currentScale = Math.max(block.scale.x || 1, block.scale.y || 1, block.scale.z || 1)
+      const targetScale = Math.max(desiredScale, currentScale, 1)
       gsap.to(block.scale, {
         x: targetScale,
         y: targetScale,
         z: targetScale,
         duration: 0.2,
-        ease: 'power2.out'
+        ease: 'power2.out',
+        overwrite: 'auto'
       })
       
       if (!block.material.emissive) {
@@ -1521,11 +1634,12 @@ export class ThreeDRenderer {
       if (isHighlightedBlock) {
         // 恢复到高亮状态（浮起状态）
         gsap.to(block.scale, {
-          x: 1.2,
-          y: 1.2,
-          z: 1.2,
+          x: baseScale * 1.2,
+          y: baseScale * 1.2,
+          z: baseScale * 1.2,
           duration: 0.2,
-          ease: 'power2.out'
+          ease: 'power2.out',
+          overwrite: 'auto'
         })
         
         if (block.material.emissive) {
@@ -1538,11 +1652,12 @@ export class ThreeDRenderer {
       } else {
         // 恢复到初始状态
         gsap.to(block.scale, {
-          x: 1,
-          y: 1,
-          z: 1,
+          x: baseScale,
+          y: baseScale,
+          z: baseScale,
           duration: 0.2,
-          ease: 'power2.out'
+          ease: 'power2.out',
+          overwrite: 'auto'
         })
         
         if (block.material.emissive) {
